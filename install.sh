@@ -1,70 +1,63 @@
 #!/bin/bash
 
 # ====================================================
-# 项目：API 零信任流量护城河 (API Zero-Trust Shield)
-# 描述：专为高价值流量节点打造的防扫描、防盗刷反代网关
+# 项目：API 零信任流量护城河
 # 环境：Debian / Ubuntu
 # ====================================================
 
-# 终端色彩定义
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# 权限与系统架构预检
+BASE_DIR="/etc/nginx/api_shield"
+
 if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}严重错误：底层网络与证书配置需要最高权限。请使用 root 账号或 sudo 执行本脚本。${NC}"
+  echo -e "${RED}严重错误：必须使用 root 权限运行本系统。${NC}"
   exit 1
 fi
 
-if [ ! -f /etc/debian_version ]; then
-    echo -e "${RED}兼容性中断：本护城河系统目前仅支持 Debian 或 Ubuntu 操作系统。${NC}"
-    exit 1
-fi
-
-# 环境初始化与依赖灌入
 function init_env() {
     if ! command -v nginx >/dev/null 2>&1 || ! command -v certbot >/dev/null 2>&1; then
-        echo -e "${CYAN}正在为您构筑底层依赖环境 (Nginx & Certbot)...${NC}"
+        echo -e "${CYAN}正在初始化底层依赖环境...${NC}"
         apt-get update -qq
         apt-get install -y nginx certbot python3-certbot-nginx > /dev/null 2>&1
         rm -f /etc/nginx/sites-enabled/default
         systemctl enable nginx
         systemctl start nginx
     fi
+    mkdir -p "$BASE_DIR"
 }
 
-# 模块一：部署反代节点 (严格校验输入)
-function add_proxy() {
-    echo -e "\n${CYAN}>>> 部署全新的反代节点 <<<${NC}"
+function safe_reload() {
+    nginx -t > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        systemctl reload nginx
+        echo -e "${GREEN}底层引擎已热重载，配置生效。${NC}"
+        return 0
+    else
+        echo -e "${RED}异常拦截：Nginx 语法自检失败，已放弃重载以保护现有业务。${NC}"
+        return 1
+    fi
+}
+
+function deploy_domain() {
+    echo -e "\n${CYAN}--- 建立域名基地 ---${NC}"
     
-    # 强制输入自有域名
     while true; do
-        read -p "步骤 1: 请输入您的自有域名 (例如 api.yourdomain.com): " MY_DOMAIN
+        read -p "请输入新的网关域名: " MY_DOMAIN
         MY_DOMAIN=$(echo "$MY_DOMAIN" | tr -d ' ')
         if [ -n "$MY_DOMAIN" ]; then break; fi
-        echo -e "${RED}输入阻断：域名为底层寻址基础，不可为空，请重新输入。${NC}"
+        echo -e "${RED}域名不可为空。${NC}"
     done
 
-    # 强制输入目标源站
-    while true; do
-        read -p "步骤 2: 请输入需反代的目标源站 (例如 codex.mist.pw): " TARGET_DOMAIN
-        TARGET_DOMAIN=$(echo "$TARGET_DOMAIN" | tr -d ' ')
-        if [ -n "$TARGET_DOMAIN" ]; then break; fi
-        echo -e "${RED}输入阻断：目标源站为核心路由节点，不可为空，请重新输入。${NC}"
-    done
+    if [ -f "/etc/nginx/sites-available/$MY_DOMAIN" ]; then
+        echo -e "${RED}该域名已存在，请使用管理路径功能。${NC}"
+        return
+    fi
 
-    # 强制输入放行路径
-    while true; do
-        read -p "步骤 3: 请输入唯一的 API 放行路径 (例如 /responses 或 /v1/): " API_PATH
-        API_PATH=$(echo "$API_PATH" | tr -d ' ')
-        if [ -n "$API_PATH" ]; then break; fi
-        echo -e "${RED}输入阻断：为保证零信任安全机制，必须显式指定一个业务放行路径。${NC}"
-    done
-
-    echo -e "${YELLOW}参数捕获完毕。正在建立安全隧道并申请 SSL 证书，请稍候...${NC}"
+    echo -e "${YELLOW}正在建立安全隧道并申请 SSL 证书...${NC}"
     TMP_CONF="/etc/nginx/sites-available/$MY_DOMAIN"
     cat > "$TMP_CONF" <<EOF
 server {
@@ -79,14 +72,14 @@ EOF
     certbot --nginx -d "$MY_DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email > /dev/null 2>&1
 
     if [ $? -ne 0 ]; then
-        echo -e "${RED}部署失败：证书机构拒绝签发。${NC}"
-        echo -e "排查指南：请务必确保您的域名已在 DNS 服务商处，正确添加 A 记录并指向了本台服务器的公网 IP。"
+        echo -e "${RED}证书签发失败，请检查 DNS 解析。${NC}"
         rm -f "$TMP_CONF" /etc/nginx/sites-enabled/"$MY_DOMAIN"
         systemctl reload nginx
         return
     fi
 
-    echo -e "${CYAN}证书签发完毕，正在注入高频防御规则...${NC}"
+    mkdir -p "$BASE_DIR/$MY_DOMAIN"
+
     cat > "$TMP_CONF" <<EOF
 server {
     listen 80;
@@ -103,138 +96,214 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
 
-    # 封锁特征扫描器与爬虫
     if (\$http_user_agent ~* (curl|wget|python|java|go-http-client|nikto|nmap|zgrab|masscan)) {
         return 444; 
     }
 
-    # 阻断所有非授权的路径嗅探，保护流量余额
+    include $BASE_DIR/$MY_DOMAIN/*.conf;
+
     location / {
         return 444;
     }
-
-    # 业务放行：仅允许指定路径穿透
-    location ^~ $API_PATH {
-        proxy_pass https://$TARGET_DOMAIN;
-        proxy_set_header Host $TARGET_DOMAIN;
-        proxy_ssl_server_name on;
-        proxy_ssl_name $TARGET_DOMAIN;
-        
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-
-        proxy_connect_timeout 15s;
-        proxy_read_timeout 60s;
-        proxy_send_timeout 60s;
-        
-        proxy_buffering off;
-        chunked_transfer_encoding on;
-    }
 }
 EOF
-
-    nginx -t > /dev/null 2>&1
-    if [ $? -eq 0 ]; then
-        systemctl reload nginx
-        echo -e "${GREEN}恭喜，节点 [$MY_DOMAIN] 部署成功！${NC}"
-        echo -e "外界只能通过严格匹配 ${YELLOW}https://$MY_DOMAIN$API_PATH${NC} 进行访问，其他试探将一律被静默抛弃。"
+    
+    if safe_reload; then
+        echo -e "${GREEN}网关 [$MY_DOMAIN] 部署完毕。当前为全封闭防御状态。${NC}"
     else
-        echo -e "${RED}底层引擎重构异常，为保证服务器稳定，已自动回滚操作。${NC}"
         rm -f "$TMP_CONF" /etc/nginx/sites-enabled/"$MY_DOMAIN"
+        rm -rf "$BASE_DIR/$MY_DOMAIN"
         systemctl reload nginx
     fi
 }
 
-# 模块二：查看运行节点
-function list_proxies() {
-    echo -e "\n${CYAN}>>> 当前处于保护中的节点 <<<${NC}"
-    local count=0
-    for conf in /etc/nginx/sites-enabled/*; do
-        if [ -f "$conf" ] && [[ "$(basename "$conf")" != "default" ]]; then
-            domain=$(basename "$conf")
-            path=$(grep -m 1 "location \^~" "$conf" | awk '{print $3}')
-            target=$(grep -m 1 "proxy_pass" "$conf" | awk '{print $2}' | tr -d ';')
-            echo -e "盾牌开启: ${GREEN}$domain${NC} | 开放暗门: ${GREEN}${path:-解析失败}${NC} | 保护源站: ${GREEN}${target:-解析失败}${NC}"
-            ((count++))
-        fi
-    done
-    if [ "$count" -eq 0 ]; then echo "当前尚未部署任何保护节点。"; fi
-}
-
-# 模块三：销毁指定节点
-function delete_proxy() {
-    echo -e "\n${CYAN}>>> 销毁指定节点 <<<${NC}"
+function manage_paths() {
+    echo -e "\n${CYAN}--- 管理路径暗门 ---${NC}"
     local domains=()
-    for conf in /etc/nginx/sites-enabled/*; do
-        if [ -f "$conf" ] && [[ "$(basename "$conf")" != "default" ]]; then
-            domains+=("$(basename "$conf")")
+    for dir in "$BASE_DIR"/*; do
+        if [ -d "$dir" ]; then
+            domains+=("$(basename "$dir")")
         fi
     done
 
     if [ ${#domains[@]} -eq 0 ]; then
-        echo "暂无可以销毁的节点。"
-        return
+        echo -e "系统暂无受保护的域名。"; return
     fi
 
-    # 动态渲染序号菜单
+    echo "选择操作目标:"
     for i in "${!domains[@]}"; do
         echo "$((i+1)). ${domains[$i]}"
     done
-    echo "0. 取消操作并返回主页面"
-
-    read -p "请选择需要彻底抹除的节点序号 [0-$(( ${#domains[@]} ))]: " choice
+    echo "0. 返回主菜单"
     
-    if [[ ! "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 0 ] || [ "$choice" -gt "${#domains[@]}" ]; then
-        echo -e "${RED}指令不合法，已终止操作。${NC}"
-        return
+    read -p "请输入序号: " d_choice
+    if [ "$d_choice" == "0" ]; then return; fi
+    if [[ ! "$d_choice" =~ ^[0-9]+$ ]] || [ "$d_choice" -lt 1 ] || [ "$d_choice" -gt "${#domains[@]}" ]; then
+        echo -e "${RED}输入无效。${NC}"; return
+    fi
+    
+    local SELECT_DOMAIN="${domains[$((d_choice-1))]}"
+    local DOMAIN_DIR="$BASE_DIR/$SELECT_DOMAIN"
+
+    echo -e "\n当前操作域: ${GREEN}$SELECT_DOMAIN${NC}"
+    echo "1. 新增穿透路径"
+    echo "2. 物理抹除路径"
+    echo "0. 返回主菜单"
+    read -p "请输入序号: " op_choice
+
+    if [ "$op_choice" == "1" ]; then
+        # 注意：此处为输入新数据，必须由用户自行输入文本
+        while true; do
+            read -p "请输入目标源站: " TARGET_DOMAIN
+            TARGET_DOMAIN=$(echo "$TARGET_DOMAIN" | tr -d ' ')
+            if [ -n "$TARGET_DOMAIN" ]; then break; fi
+        done
+
+        while true; do
+            read -p "请输入 API 放行路径: " API_PATH
+            API_PATH=$(echo "$API_PATH" | tr -d ' ')
+            if [ -n "$API_PATH" ]; then break; fi
+        done
+
+        SAFE_NAME=$(echo "$API_PATH" | sed 's/\//_/g')
+        PATH_CONF="$DOMAIN_DIR/${SAFE_NAME}.conf"
+
+        cat > "$PATH_CONF" <<EOF
+location ^~ $API_PATH {
+    proxy_pass https://$TARGET_DOMAIN;
+    proxy_set_header Host $TARGET_DOMAIN;
+    proxy_ssl_server_name on;
+    proxy_ssl_name $TARGET_DOMAIN;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_connect_timeout 15s;
+    proxy_read_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_buffering off;
+    chunked_transfer_encoding on;
+}
+EOF
+        if safe_reload; then
+            echo -e "${GREEN}路径 [$API_PATH] 成功打通，指向 [$TARGET_DOMAIN]。${NC}"
+        else
+            rm -f "$PATH_CONF"
+            systemctl reload nginx
+        fi
+
+    elif [ "$op_choice" == "2" ]; then
+        local path_files=()
+        for f in "$DOMAIN_DIR"/*.conf; do
+            [ -f "$f" ] && path_files+=("$f")
+        done
+
+        if [ ${#path_files[@]} -eq 0 ]; then
+            echo "该域名下暂无开放路径。"; return
+        fi
+
+        echo -e "\n当前开放的路径:"
+        for i in "${!path_files[@]}"; do
+            local p_val=$(grep "location \^~" "${path_files[$i]}" | awk '{print $3}')
+            local t_val=$(grep "proxy_pass" "${path_files[$i]}" | awk '{print $2}' | tr -d ';')
+            echo "$((i+1)). 路径: $p_val -> 指向: $t_val"
+        done
+        echo "0. 返回主菜单"
+        
+        read -p "请输入要抹除的序号: " p_choice
+        if [ "$p_choice" == "0" ]; then return; fi
+        if [[ ! "$p_choice" =~ ^[0-9]+$ ]] || [ "$p_choice" -lt 1 ] || [ "$p_choice" -gt "${#path_files[@]}" ]; then
+            echo -e "${RED}输入无效。${NC}"; return
+        fi
+
+        local DEL_FILE="${path_files[$((p_choice-1))]}"
+        rm -f "$DEL_FILE"
+        echo -e "${YELLOW}已移除路径碎片，正在热重载...${NC}"
+        safe_reload
+    fi
+}
+
+function list_status() {
+    echo -e "\n${CYAN}--- 全网护城河状态 ---${NC}"
+    local count=0
+    for dir in "$BASE_DIR"/*; do
+        if [ -d "$dir" ]; then
+            local domain=$(basename "$dir")
+            echo -e "网关节点: ${GREEN}$domain${NC}"
+            local has_path=0
+            for conf in "$dir"/*.conf; do
+                if [ -f "$conf" ]; then
+                    local p_val=$(grep "location \^~" "$conf" | awk '{print $3}')
+                    local t_val=$(grep "proxy_pass" "$conf" | awk '{print $2}' | tr -d ';')
+                    echo -e "  - 放行路径: ${YELLOW}${p_val}${NC} -> ${CYAN}${t_val}${NC}"
+                    has_path=1
+                fi
+            done
+            if [ $has_path -eq 0 ]; then
+                echo -e "  - ${RED}当前无开放路径 (全封闭防御)${NC}"
+            fi
+            echo "----------------------------------------------"
+            ((count++))
+        fi
+    done
+    if [ "$count" -eq 0 ]; then echo "系统内空无一物。"; fi
+}
+
+function delete_domain() {
+    echo -e "\n${CYAN}--- 摧毁域名基地 ---${NC}"
+    local domains=()
+    for dir in "$BASE_DIR"/*; do
+        if [ -d "$dir" ]; then
+            domains+=("$(basename "$dir")")
+        fi
+    done
+
+    if [ ${#domains[@]} -eq 0 ]; then
+        echo "系统暂无可摧毁的节点。"; return
     fi
 
-    if [ "$choice" -eq 0 ]; then return; fi
+    echo "选择摧毁目标:"
+    for i in "${!domains[@]}"; do
+        echo "$((i+1)). ${domains[$i]}"
+    done
+    echo "0. 取消"
+
+    read -p "请输入序号: " choice
+    if [ "$choice" == "0" ]; then return; fi
+    if [[ ! "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#domains[@]}" ]; then
+        echo -e "${RED}输入无效。${NC}"; return
+    fi
 
     local DEL_DOMAIN="${domains[$((choice-1))]}"
     
-    echo -e "${YELLOW}正在执行深度清理，擦除路由配置与加密证书: $DEL_DOMAIN ...${NC}"
+    echo -e "${YELLOW}正在执行深度清理: $DEL_DOMAIN ...${NC}"
     rm -f "/etc/nginx/sites-available/$DEL_DOMAIN"
     rm -f "/etc/nginx/sites-enabled/$DEL_DOMAIN"
+    rm -rf "$BASE_DIR/$DEL_DOMAIN"
     certbot delete --cert-name "$DEL_DOMAIN" --non-interactive > /dev/null 2>&1
-    systemctl reload nginx
     
-    echo -e "${GREEN}节点 [$DEL_DOMAIN] 的所有痕迹已被物理抹除。${NC}"
+    safe_reload
+    echo -e "${GREEN}域名 [$DEL_DOMAIN] 已彻底抹除。${NC}"
 }
 
-# 模块四：重载网关引擎
-function reload_nginx() {
-    echo -e "\n${CYAN}>>> 重载网关引擎 <<<${NC}"
-    nginx -t > /dev/null 2>&1
-    if [ $? -eq 0 ]; then
-        systemctl reload nginx
-        echo -e "${GREEN}底层网络引擎已完成热重载。${NC}"
-    else
-        echo -e "${RED}发现致命语法错误，引擎拒绝重载以保护现有连接。请检查 Nginx 配置文件。${NC}"
-    fi
-}
-
-# 启动与主事件循环
 init_env
 clear
 while true; do
     echo -e "\n=============================================="
-    echo -e "          ${GREEN}API 零信任流量护城河 v1.0${NC}"
+    echo -e "         ${GREEN}API 零信任矩阵网关系统${NC}"
     echo -e "=============================================="
-    echo "  1. 部署反代节点"
-    echo "  2. 查看运行节点"
-    echo "  3. 销毁指定节点"
-    echo "  4. 重载网关引擎"
+    echo "  1. 建立域名基地"
+    echo "  2. 管理路径暗门"
+    echo "  3. 视察全网矩阵"
+    echo "  4. 摧毁域名基地"
     echo "  0. 退出管理系统"
     echo "----------------------------------------------"
-    read -p "老板，请下达执行指令 [0-4]: " menu_choice
+    read -p "请输入指令: " menu_choice
 
     case $menu_choice in
-        1) add_proxy ;;
-        2) list_proxies ;;
-        3) delete_proxy ;;
-        4) reload_nginx ;;
-        0) echo -e "${GREEN}系统已挂起。${NC}\n"; exit 0 ;;
-        *) echo -e "${RED}无法识别该指令，请重新输入。${NC}" ;;
+        1) deploy_domain ;;
+        2) manage_paths ;;
+        3) list_status ;;
+        4) delete_domain ;;
+        0) echo -e "${GREEN}控制权已交还。${NC}\n"; exit 0 ;;
+        *) echo -e "${RED}指令无效。${NC}" ;;
     esac
 done
