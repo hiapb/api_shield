@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ====================================================
-# 项目：API 零信任流量护城河
+# 项目：API 零信任流量护城河 (直觉融合矩阵版)
 # 环境：Debian / Ubuntu
 # ====================================================
 
@@ -43,21 +43,38 @@ function safe_reload() {
 }
 
 function deploy_domain() {
-    echo -e "\n${CYAN}--- 建立域名基地 ---${NC}"
+    echo -e "\n${CYAN}--- 部署全新网关节点 (含首条路由) ---${NC}"
     
+    # 1. 捕获自身域名
     while true; do
-        read -p "请输入新的网关域名: " MY_DOMAIN
+        read -p "请输入新的网关域名 (例 api.domain.com): " MY_DOMAIN
         MY_DOMAIN=$(echo "$MY_DOMAIN" | tr -d ' ')
         if [ -n "$MY_DOMAIN" ]; then break; fi
         echo -e "${RED}域名不可为空。${NC}"
     done
 
     if [ -f "/etc/nginx/sites-available/$MY_DOMAIN" ]; then
-        echo -e "${RED}该域名已存在，请使用管理路径功能。${NC}"
+        echo -e "${RED}该域名已存在。若要添加新路径，请使用主菜单的 [管理路径暗门] 功能。${NC}"
         return
     fi
 
-    echo -e "${YELLOW}正在建立安全隧道并申请 SSL 证书...${NC}"
+    # 2. 捕获目标源站
+    while true; do
+        read -p "请输入反代的目标源站 (例 codex.mist.pw): " TARGET_DOMAIN
+        TARGET_DOMAIN=$(echo "$TARGET_DOMAIN" | tr -d ' ')
+        if [ -n "$TARGET_DOMAIN" ]; then break; fi
+        echo -e "${RED}目标源站不可为空。${NC}"
+    done
+
+    # 3. 捕获放行路径
+    while true; do
+        read -p "请输入 API 放行路径 (例 /responses): " API_PATH
+        API_PATH=$(echo "$API_PATH" | tr -d ' ')
+        if [ -n "$API_PATH" ]; then break; fi
+        echo -e "${RED}放行路径不可为空。${NC}"
+    done
+
+    echo -e "${YELLOW}参数捕获完毕。正在申请 SSL 证书...${NC}"
     TMP_CONF="/etc/nginx/sites-available/$MY_DOMAIN"
     cat > "$TMP_CONF" <<EOF
 server {
@@ -78,7 +95,27 @@ EOF
         return
     fi
 
+    # 构建矩阵基座与首条路径碎片
     mkdir -p "$BASE_DIR/$MY_DOMAIN"
+
+    SAFE_NAME=$(echo "$API_PATH" | sed 's/\//_/g')
+    PATH_CONF="$BASE_DIR/$MY_DOMAIN/${SAFE_NAME}.conf"
+
+    cat > "$PATH_CONF" <<EOF
+location ^~ $API_PATH {
+    proxy_pass https://$TARGET_DOMAIN;
+    proxy_set_header Host $TARGET_DOMAIN;
+    proxy_ssl_server_name on;
+    proxy_ssl_name $TARGET_DOMAIN;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_connect_timeout 15s;
+    proxy_read_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_buffering off;
+    chunked_transfer_encoding on;
+}
+EOF
 
     cat > "$TMP_CONF" <<EOF
 server {
@@ -100,6 +137,7 @@ server {
         return 444; 
     }
 
+    # 引入该域名下的所有碎片化路径配置
     include $BASE_DIR/$MY_DOMAIN/*.conf;
 
     location / {
@@ -109,7 +147,8 @@ server {
 EOF
     
     if safe_reload; then
-        echo -e "${GREEN}网关 [$MY_DOMAIN] 部署完毕。当前为全封闭防御状态。${NC}"
+        echo -e "${GREEN}部署成功！${NC}"
+        echo -e "访问链路已打通: ${YELLOW}https://$MY_DOMAIN$API_PATH${NC}  ====>  ${CYAN}https://$TARGET_DOMAIN${NC}"
     else
         rm -f "$TMP_CONF" /etc/nginx/sites-enabled/"$MY_DOMAIN"
         rm -rf "$BASE_DIR/$MY_DOMAIN"
@@ -146,21 +185,20 @@ function manage_paths() {
     local DOMAIN_DIR="$BASE_DIR/$SELECT_DOMAIN"
 
     echo -e "\n当前操作域: ${GREEN}$SELECT_DOMAIN${NC}"
-    echo "1. 新增穿透路径"
-    echo "2. 物理抹除路径"
+    echo "1. 为该网关【新增】其他穿透路径"
+    echo "2. 将该网关的某条路径【物理抹除】"
     echo "0. 返回主菜单"
     read -p "请输入序号: " op_choice
 
     if [ "$op_choice" == "1" ]; then
-        # 注意：此处为输入新数据，必须由用户自行输入文本
         while true; do
-            read -p "请输入目标源站: " TARGET_DOMAIN
+            read -p "请输入新的目标源站: " TARGET_DOMAIN
             TARGET_DOMAIN=$(echo "$TARGET_DOMAIN" | tr -d ' ')
             if [ -n "$TARGET_DOMAIN" ]; then break; fi
         done
 
         while true; do
-            read -p "请输入 API 放行路径: " API_PATH
+            read -p "请输入新的 API 放行路径: " API_PATH
             API_PATH=$(echo "$API_PATH" | tr -d ' ')
             if [ -n "$API_PATH" ]; then break; fi
         done
@@ -200,11 +238,11 @@ EOF
             echo "该域名下暂无开放路径。"; return
         fi
 
-        echo -e "\n当前开放的路径:"
+        echo -e "\n当前挂载的路径:"
         for i in "${!path_files[@]}"; do
             local p_val=$(grep "location \^~" "${path_files[$i]}" | awk '{print $3}')
             local t_val=$(grep "proxy_pass" "${path_files[$i]}" | awk '{print $2}' | tr -d ';')
-            echo "$((i+1)). 路径: $p_val -> 指向: $t_val"
+            echo "$((i+1)). [路径] $p_val  ===>  [源站] $t_val"
         done
         echo "0. 返回主菜单"
         
@@ -216,35 +254,35 @@ EOF
 
         local DEL_FILE="${path_files[$((p_choice-1))]}"
         rm -f "$DEL_FILE"
-        echo -e "${YELLOW}已移除路径碎片，正在热重载...${NC}"
+        echo -e "${YELLOW}已移除该路由，正在热重载...${NC}"
         safe_reload
     fi
 }
 
 function list_status() {
-    echo -e "\n${CYAN}--- 全网护城河状态 ---${NC}"
+    echo -e "\n${CYAN}====== 全网链路透视矩阵 ======${NC}"
     local count=0
     for dir in "$BASE_DIR"/*; do
         if [ -d "$dir" ]; then
             local domain=$(basename "$dir")
-            echo -e "网关节点: ${GREEN}$domain${NC}"
+            echo -e "🌐 【主网关】: ${GREEN}$domain${NC}"
             local has_path=0
             for conf in "$dir"/*.conf; do
                 if [ -f "$conf" ]; then
                     local p_val=$(grep "location \^~" "$conf" | awk '{print $3}')
                     local t_val=$(grep "proxy_pass" "$conf" | awk '{print $2}' | tr -d ';')
-                    echo -e "  - 放行路径: ${YELLOW}${p_val}${NC} -> ${CYAN}${t_val}${NC}"
+                    echo -e "      ↳ [入口] ${YELLOW}${p_val}${NC}  ======>  [伪装穿透至] ${CYAN}${t_val}${NC}"
                     has_path=1
                 fi
             done
             if [ $has_path -eq 0 ]; then
-                echo -e "  - ${RED}当前无开放路径 (全封闭防御)${NC}"
+                echo -e "      ↳ ${RED}[空洞] 当前无任何路由，外部访问全面阻断 (444丢弃)${NC}"
             fi
             echo "----------------------------------------------"
             ((count++))
         fi
     done
-    if [ "$count" -eq 0 ]; then echo "系统内空无一物。"; fi
+    if [ "$count" -eq 0 ]; then echo "当前处于物理隔离状态，无任何网关节点。"; fi
 }
 
 function delete_domain() {
@@ -290,10 +328,10 @@ while true; do
     echo -e "\n=============================================="
     echo -e "         ${GREEN}API 零信任矩阵网关系统${NC}"
     echo -e "=============================================="
-    echo "  1. 建立域名基地"
-    echo "  2. 管理路径暗门"
-    echo "  3. 视察全网矩阵"
-    echo "  4. 摧毁域名基地"
+    echo "  1. 部署全新网关节点"
+    echo "  2. 管理网关内部路由 (增/删路径)"
+    echo "  3. 视察全网透视矩阵 (查看详情)"
+    echo "  4. 彻底摧毁网关节点"
     echo "  0. 退出管理系统"
     echo "----------------------------------------------"
     read -p "请输入指令: " menu_choice
