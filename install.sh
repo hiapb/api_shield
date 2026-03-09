@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ====================================================
-# 项目：API 零信任流量护城河 (直觉融合矩阵版)
+# 项目：API 零信任流量护城河
 # 环境：Debian / Ubuntu
 # ====================================================
 
@@ -60,7 +60,7 @@ function deploy_domain() {
 
     # 2. 捕获目标源站
     while true; do
-        read -p "请输入反代的目标源站 (例 codex.mist.pw): " TARGET_DOMAIN
+        read -p "请输入反代的目标源站 (例 site.domain.com): " TARGET_DOMAIN
         TARGET_DOMAIN=$(echo "$TARGET_DOMAIN" | tr -d ' ')
         if [ -n "$TARGET_DOMAIN" ]; then break; fi
         echo -e "${RED}目标源站不可为空。${NC}"
@@ -329,8 +329,8 @@ while true; do
     echo -e "         ${GREEN}API 零信任矩阵网关系统${NC}"
     echo -e "=============================================="
     echo "  1. 部署全新网关节点"
-    echo "  2. 管理网关内部路由 (增/删路径)"
-    echo "  3. 视察全网透视矩阵 (查看详情)"
+    echo "  2. 管理网关内部路由"
+    echo "  3. 视察全网透视矩阵"
     echo "  4. 彻底摧毁网关节点"
     echo "  0. 退出管理系统"
     echo "----------------------------------------------"
