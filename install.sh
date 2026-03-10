@@ -191,14 +191,24 @@ function manage_paths() {
     read -p "请输入序号: " op_choice
 
     if [ "$op_choice" == "1" ]; then
-        while true; do
-            read -p "请输入新的目标源站: " TARGET_DOMAIN
-            TARGET_DOMAIN=$(echo "$TARGET_DOMAIN" | tr -d ' ')
-            if [ -n "$TARGET_DOMAIN" ]; then break; fi
-        done
+        # 自动提取该域名下已有的目标源站
+        local existing_conf=$(ls "$DOMAIN_DIR"/*.conf 2>/dev/null | head -n 1)
+        if [ -n "$existing_conf" ]; then
+            # 从 proxy_pass https://xxxx.com; 中提取 xxxx.com
+            TARGET_DOMAIN=$(grep "proxy_pass" "$existing_conf" | awk '{print $2}' | tr -d ';' | sed 's|^https://||')
+            echo -e "${YELLOW}已自动锁定目标源站: ${CYAN}$TARGET_DOMAIN${NC}"
+        else
+            # 防错兜底：如果该网关下所有路径都被删光了，才需要重新输入
+            while true; do
+                read -p "未找到存量路由配置，请重新输入目标源站: " TARGET_DOMAIN
+                TARGET_DOMAIN=$(echo "$TARGET_DOMAIN" | tr -d ' ')
+                if [ -n "$TARGET_DOMAIN" ]; then break; fi
+            done
+        fi
 
+        # 仅需捕获新的放行路径
         while true; do
-            read -p "请输入新的 API 放行路径: " API_PATH
+            read -p "请输入新增的 API 放行路径 (例 /v2/data): " API_PATH
             API_PATH=$(echo "$API_PATH" | tr -d ' ')
             if [ -n "$API_PATH" ]; then break; fi
         done
@@ -222,7 +232,7 @@ location ^~ $API_PATH {
 }
 EOF
         if safe_reload; then
-            echo -e "${GREEN}路径 [$API_PATH] 成功打通，指向 [$TARGET_DOMAIN]。${NC}"
+            echo -e "${GREEN}路径 [$API_PATH] 成功打通，已自动指向 [$TARGET_DOMAIN]。${NC}"
         else
             rm -f "$PATH_CONF"
             systemctl reload nginx
