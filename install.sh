@@ -128,6 +128,9 @@ server {
     listen 443 ssl http2;
     server_name $MY_DOMAIN;
 
+    # 提高 Payload 上限以支持大流量 API 传输
+    client_max_body_size 100M;
+
     ssl_certificate /etc/letsencrypt/live/$MY_DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$MY_DOMAIN/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
