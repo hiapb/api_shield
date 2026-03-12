@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ====================================================
-# 项目：API 零信任流量护城河
+# 项目：API 零信任流量护城河 (含隐蔽路径映射版)
 # 环境：Debian / Ubuntu
 # ====================================================
 
@@ -68,11 +68,25 @@ function deploy_domain() {
 
     # 3. 捕获放行路径
     while true; do
-        read -p "请输入 API 放行路径 (例 /responses): " API_PATH
+        read -p "请输入对外的 API 放行路径 (例 /v1): " API_PATH
         API_PATH=$(echo "$API_PATH" | tr -d ' ')
         if [ -n "$API_PATH" ]; then break; fi
         echo -e "${RED}放行路径不可为空。${NC}"
     done
+
+    # 4. [新增核心逻辑] 捕获隐蔽映射路径
+    read -p "请输入后端的真实隐蔽路径 (直接回车则保持原样，例 /xxx/v1): " TARGET_PATH
+    TARGET_PATH=$(echo "$TARGET_PATH" | tr -d ' ')
+    
+    # 组装最终的 Proxy URL
+    if [ -z "$TARGET_PATH" ]; then
+        PROXY_URL="https://$TARGET_DOMAIN"
+    else
+        if [[ "$TARGET_PATH" != /* ]]; then
+            TARGET_PATH="/$TARGET_PATH"
+        fi
+        PROXY_URL="https://$TARGET_DOMAIN$TARGET_PATH"
+    fi
 
     echo -e "${YELLOW}参数捕获完毕。正在申请 SSL 证书...${NC}"
     TMP_CONF="/etc/nginx/sites-available/$MY_DOMAIN"
@@ -97,13 +111,12 @@ EOF
 
     # 构建矩阵基座与首条路径碎片
     mkdir -p "$BASE_DIR/$MY_DOMAIN"
-
     SAFE_NAME=$(echo "$API_PATH" | sed 's/\//_/g')
     PATH_CONF="$BASE_DIR/$MY_DOMAIN/${SAFE_NAME}.conf"
 
     cat > "$PATH_CONF" <<EOF
 location ^~ $API_PATH {
-    proxy_pass https://$TARGET_DOMAIN;
+    proxy_pass $PROXY_URL;
     proxy_set_header Host $TARGET_DOMAIN;
     proxy_ssl_server_name on;
     proxy_ssl_name $TARGET_DOMAIN;
@@ -128,9 +141,7 @@ server {
     listen 443 ssl http2;
     server_name $MY_DOMAIN;
 
-    # 提高 Payload 上限以支持大流量 API 传输
     client_max_body_size 100M;
-
     ssl_certificate /etc/letsencrypt/live/$MY_DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$MY_DOMAIN/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -140,7 +151,6 @@ server {
         return 444; 
     }
 
-    # 引入该域名下的所有碎片化路径配置
     include $BASE_DIR/$MY_DOMAIN/*.conf;
 
     location / {
@@ -151,7 +161,7 @@ EOF
     
     if safe_reload; then
         echo -e "${GREEN}部署成功！${NC}"
-        echo -e "访问链路已打通: ${YELLOW}https://$MY_DOMAIN$API_PATH${NC}  ====>  ${CYAN}https://$TARGET_DOMAIN${NC}"
+        echo -e "访问链路已打通: ${YELLOW}https://$MY_DOMAIN$API_PATH${NC}  ====>  ${CYAN}$PROXY_URL${NC}"
     else
         rm -f "$TMP_CONF" /etc/nginx/sites-enabled/"$MY_DOMAIN"
         rm -rf "$BASE_DIR/$MY_DOMAIN"
@@ -194,14 +204,11 @@ function manage_paths() {
     read -p "请输入序号: " op_choice
 
     if [ "$op_choice" == "1" ]; then
-        # 自动提取该域名下已有的目标源站
         local existing_conf=$(ls "$DOMAIN_DIR"/*.conf 2>/dev/null | head -n 1)
         if [ -n "$existing_conf" ]; then
-            # 从 proxy_pass https://xxxx.com; 中提取 xxxx.com
-            TARGET_DOMAIN=$(grep "proxy_pass" "$existing_conf" | awk '{print $2}' | tr -d ';' | sed 's|^https://||')
+            TARGET_DOMAIN=$(grep "proxy_set_header Host" "$existing_conf" | awk '{print $4}' | tr -d ';')
             echo -e "${YELLOW}已自动锁定目标源站: ${CYAN}$TARGET_DOMAIN${NC}"
         else
-            # 防错兜底：如果该网关下所有路径都被删光了，才需要重新输入
             while true; do
                 read -p "未找到存量路由配置，请重新输入目标源站: " TARGET_DOMAIN
                 TARGET_DOMAIN=$(echo "$TARGET_DOMAIN" | tr -d ' ')
@@ -209,19 +216,31 @@ function manage_paths() {
             done
         fi
 
-        # 仅需捕获新的放行路径
         while true; do
-            read -p "请输入新增的 API 放行路径 (例 /v2/data): " API_PATH
+            read -p "请输入对外新增的 API 放行路径 (例 /v2/data): " API_PATH
             API_PATH=$(echo "$API_PATH" | tr -d ' ')
             if [ -n "$API_PATH" ]; then break; fi
         done
+
+        # [新增核心逻辑] 捕获隐蔽映射路径
+        read -p "请输入后端的真实隐蔽路径 (直接回车保持原样，例 /core/v2): " TARGET_PATH
+        TARGET_PATH=$(echo "$TARGET_PATH" | tr -d ' ')
+
+        if [ -z "$TARGET_PATH" ]; then
+            PROXY_URL="https://$TARGET_DOMAIN"
+        else
+            if [[ "$TARGET_PATH" != /* ]]; then
+                TARGET_PATH="/$TARGET_PATH"
+            fi
+            PROXY_URL="https://$TARGET_DOMAIN$TARGET_PATH"
+        fi
 
         SAFE_NAME=$(echo "$API_PATH" | sed 's/\//_/g')
         PATH_CONF="$DOMAIN_DIR/${SAFE_NAME}.conf"
 
         cat > "$PATH_CONF" <<EOF
 location ^~ $API_PATH {
-    proxy_pass https://$TARGET_DOMAIN;
+    proxy_pass $PROXY_URL;
     proxy_set_header Host $TARGET_DOMAIN;
     proxy_ssl_server_name on;
     proxy_ssl_name $TARGET_DOMAIN;
@@ -235,7 +254,7 @@ location ^~ $API_PATH {
 }
 EOF
         if safe_reload; then
-            echo -e "${GREEN}路径 [$API_PATH] 成功打通，已自动指向 [$TARGET_DOMAIN]。${NC}"
+            echo -e "${GREEN}路径 [$API_PATH] 成功打通，已暗中映射至 [$PROXY_URL]。${NC}"
         else
             rm -f "$PATH_CONF"
             systemctl reload nginx
@@ -251,11 +270,11 @@ EOF
             echo "该域名下暂无开放路径。"; return
         fi
 
-        echo -e "\n当前挂载的路径:"
+        echo -e "\n当前挂载的路径矩阵:"
         for i in "${!path_files[@]}"; do
             local p_val=$(grep "location \^~" "${path_files[$i]}" | awk '{print $3}')
             local t_val=$(grep "proxy_pass" "${path_files[$i]}" | awk '{print $2}' | tr -d ';')
-            echo "$((i+1)). [路径] $p_val  ===>  [源站] $t_val"
+            echo "$((i+1)). [网关入口] $p_val  ===>  [源站底座] $t_val"
         done
         echo "0. 返回主菜单"
         
@@ -267,7 +286,7 @@ EOF
 
         local DEL_FILE="${path_files[$((p_choice-1))]}"
         rm -f "$DEL_FILE"
-        echo -e "${YELLOW}已移除该路由，正在热重载...${NC}"
+        echo -e "${YELLOW}已切断该路由链路，正在热重载...${NC}"
         safe_reload
     fi
 }
