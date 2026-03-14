@@ -379,8 +379,8 @@ function manage_paths() {
         TARGET_PROTO=$([ "$proto_choice" == "1" ] && echo "http" || echo "https")
 
         local TARGET_DOMAIN API_PATH TARGET_PATH
-        while true; read -p "反代源站 (限 域名/IPv4/localhost): " TARGET_DOMAIN; if validate_target "$TARGET_DOMAIN"; then break; fi; done
-        while true; read -p "对外放行路径: " API_PATH; if validate_path "$API_PATH"; then break; fi; done
+        while true; do read -p "反代源站 (限 域名/IPv4/localhost): " TARGET_DOMAIN; if validate_target "$TARGET_DOMAIN"; then break; fi; done
+        while true; do read -p "对外放行路径: " API_PATH; if validate_path "$API_PATH"; then break; fi; done
         
         read -p "后端真实映射路径 (直接回车保持透传): " TARGET_PATH
         if [ -n "$TARGET_PATH" ] && ! validate_path "$TARGET_PATH"; then TARGET_PATH=""; fi
