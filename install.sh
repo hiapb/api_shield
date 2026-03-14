@@ -38,7 +38,6 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-
 # ==========================================
 # 核心验证组件
 # ==========================================
@@ -376,143 +375,172 @@ function manage_paths() {
     local SELECT_DOMAIN="${domains[$((d_choice-1))]}"
     local DOMAIN_DIR="$BASE_DIR/$SELECT_DOMAIN"
 
-    # ================= 状态嗅探与前置全景展示 =================
-    echo -e "\n=============================================="
-    echo -e "当前操作域: ${GREEN}$SELECT_DOMAIN${NC}"
-    echo -e "当前已挂载链路："
-    
-    shopt -s nullglob
-    local conf_list=("$DOMAIN_DIR"/*.conf)
-    shopt -u nullglob
-    
-    local auto_proto=""
-    local auto_target=""
-
-    for conf in "${conf_list[@]}"; do
-        local meta_disp=$(grep "^# META_DISPLAY:" "$conf" | sed 's/^# META_DISPLAY:[[:space:]]*//' 2>/dev/null)
-        if [ -n "$meta_disp" ]; then
-            echo -e "  ↳ ${YELLOW}$meta_disp${NC}"
-        fi
+    # ================= 交互状态机循环 =================
+    while true; do
+        echo -e "\n=============================================="
+        echo -e "当前操作域: ${GREEN}$SELECT_DOMAIN${NC}"
+        echo -e "当前已挂载链路："
         
-        # AST级正则解析：从现有配置中提取上游物理源站
-        if [ -z "$auto_target" ]; then
-            local p_pass=$(grep -m 1 "proxy_pass" "$conf" | awk '{print $2}' | tr -d ';' 2>/dev/null)
-            if [[ "$p_pass" =~ ^(https?)://([^/]+) ]]; then
-                auto_proto="${BASH_REMATCH[1]}"
-                auto_target="${BASH_REMATCH[2]}"
+        shopt -s nullglob
+        local conf_list=("$DOMAIN_DIR"/*.conf)
+        shopt -u nullglob
+        
+        local auto_proto=""
+        local auto_target=""
+        local path_count=0
+
+        for conf in "${conf_list[@]}"; do
+            [[ "$(basename "$conf")" == "00_blackhole.conf" ]] && continue
+            
+            local meta_disp=$(grep "^# META_DISPLAY:" "$conf" | sed 's/^# META_DISPLAY:[[:space:]]*//' 2>/dev/null)
+            if [ -n "$meta_disp" ]; then
+                echo -e "  ↳ ${YELLOW}$meta_disp${NC}"
+                ((path_count++))
+            fi
+            
+            # AST级正则解析：从现有配置中提取上游物理源站记忆
+            if [ -z "$auto_target" ]; then
+                local p_pass=$(grep -m 1 "proxy_pass" "$conf" | awk '{print $2}' | tr -d ';' 2>/dev/null)
+                if [[ "$p_pass" =~ ^(https?)://([^/]+) ]]; then
+                    auto_proto="${BASH_REMATCH[1]}"
+                    auto_target="${BASH_REMATCH[2]}"
+                fi
+            fi
+        done
+        
+        if [ $path_count -eq 0 ]; then
+             echo -e "  ↳ ${RED}[空矩阵] 警告：暂无任何自定义路由${NC}"
+        fi
+        echo -e "==============================================\n"
+
+        echo "1. 挂载新路由"
+        echo "2. 物理截断路由"
+        echo "0. 返回主菜单"
+        local op_choice
+        read -p "选择操作: " op_choice
+
+        if [ "$op_choice" == "0" ]; then
+            break # 打破内层循环，返回主菜单
+        elif [ "$op_choice" == "1" ]; then
+            local TARGET_PROTO=""
+            local TARGET_DOMAIN=""
+            local API_PATH TARGET_PATH
+
+            if [ -n "$auto_target" ]; then
+                echo -e "探测到当前主源站记忆为: ${CYAN}${auto_proto}://${auto_target}${NC}"
+                read -p "是否直接沿用该源站？[Y/n] (默认回车沿用): " use_auto
+                if [[ ! "$use_auto" =~ ^[Nn]$ ]]; then
+                    TARGET_PROTO="$auto_proto"
+                    TARGET_DOMAIN="$auto_target"
+                fi
+            fi
+
+            if [ -z "$TARGET_DOMAIN" ]; then
+                echo -e "   [1] HTTP\n   [2] HTTPS"
+                local proto_choice
+                while true; do
+                    read -p "选择协议 (1/2): " proto_choice
+                    if [[ "$proto_choice" == "1" || "$proto_choice" == "2" ]]; then break; fi
+                done
+                TARGET_PROTO=$([ "$proto_choice" == "1" ] && echo "http" || echo "https")
+                while true; do read -p "反代源站 (限 域名/IPv4/localhost): " TARGET_DOMAIN; if validate_target "$TARGET_DOMAIN"; then break; fi; done
+            fi
+
+            while true; do read -p "对外放行路径: " API_PATH; if validate_path "$API_PATH"; then break; fi; done
+            
+            read -p "后端真实映射路径 (直接回车保持透传): " TARGET_PATH
+            if [ -n "$TARGET_PATH" ] && ! validate_path "$TARGET_PATH"; then TARGET_PATH=""; fi
+
+            local SAFE_HASH=$(echo -n "$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
+            local PATH_CONF="$DOMAIN_DIR/route_${SAFE_HASH}.conf"
+            
+            local is_overwrite=0
+            if [ -f "$PATH_CONF" ]; then
+                is_overwrite=1
+                cp "$PATH_CONF" "${PATH_CONF}.bak"
+                CLEANUP_FILES+=("${PATH_CONF}.bak")
+            fi
+
+            generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
+            manage_blackhole "$DOMAIN_DIR"
+
+            if safe_reload; then
+                echo -e "${GREEN}路由链路贯通成功。${NC}"
+                if [ $is_overwrite -eq 1 ]; then rm -f "${PATH_CONF}.bak"; fi
+            else
+                echo -e "${RED}路由注入失败，启动对称防抱死恢复...${NC}"
+                if [ $is_overwrite -eq 1 ]; then
+                    mv "${PATH_CONF}.bak" "$PATH_CONF"
+                else
+                    rm -f "$PATH_CONF"
+                fi
+                manage_blackhole "$DOMAIN_DIR"
+                safe_reload 
+            fi
+
+        elif [ "$op_choice" == "2" ]; then
+            local path_files=()
+            for f in "${conf_list[@]}"; do
+                [[ "$(basename "$f")" != "00_blackhole.conf" ]] && [ -f "$f" ] && path_files+=("$f")
+            done
+
+            if [ ${#path_files[@]} -eq 0 ]; then 
+                echo -e "${YELLOW}暂无自定义路由可供抹除。${NC}"
+                continue
+            fi
+
+            echo -e "\n选择需要截断的链路："
+            for i in "${!path_files[@]}"; do
+                local meta_disp=$(grep "^# META_DISPLAY:" "${path_files[$i]}" | sed 's/^# META_DISPLAY:[[:space:]]*//' 2>/dev/null)
+                if [ -n "$meta_disp" ]; then
+                    echo "$((i+1)). $meta_disp"
+                else
+                    echo "$((i+1)). [未识别配置] $(basename "${path_files[$i]}")"
+                fi
+            done
+            
+            local p_choice
+            read -p "选择抹除序号 (0 取消): " p_choice
+            if ! validate_number "$p_choice" || (( p_choice < 0 || p_choice > ${#path_files[@]} )); then continue; fi
+            if [ "$p_choice" == "0" ]; then continue; fi
+
+            local DEL_FILE="${path_files[$((p_choice-1))]}"
+            
+            cp "$DEL_FILE" "${DEL_FILE}.bak"
+            CLEANUP_FILES+=("${DEL_FILE}.bak")
+            rm -f "$DEL_FILE"
+            
+            # 核心机制：自愈降级链路检测
+            # 若删除后矩阵为空，且系统留有主源站记忆，则自动回落到全网放行 /
+            if [ $((${#path_files[@]} - 1)) -eq 0 ] && [ -n "$auto_target" ]; then
+                echo -e "\n${YELLOW}=== 触发降级保护机制 ===${NC}"
+                echo -e "系统检测到路由矩阵已被清空。为了保障业务连续性，已自动接管全量流量 (/) 并直通主源站：${auto_target}"
+                
+                local SAFE_HASH=$(echo -n "/" | sha256sum | awk '{print $1}' | cut -c 1-8)
+                local FALLBACK_CONF="$DOMAIN_DIR/route_${SAFE_HASH}.conf"
+                
+                generate_proxy_block "/" "$auto_proto" "$auto_target" "" "$FALLBACK_CONF"
+            fi
+            
+            manage_blackhole "$DOMAIN_DIR"
+            
+            if safe_reload; then
+                rm -f "${DEL_FILE}.bak"
+                echo -e "${GREEN}操作执行完毕，路由体系已刷新。${NC}"
+            else
+                echo -e "${RED}引擎重载受阻，启动恢复程序...${NC}"
+                mv "${DEL_FILE}.bak" "$DEL_FILE"
+                
+                # 如果降级失败，清扫自动生成的 fallback 文件
+                if [ $((${#path_files[@]} - 1)) -eq 0 ] && [ -n "$auto_target" ]; then
+                    rm -f "$DOMAIN_DIR/route_$(echo -n "/" | sha256sum | awk '{print $1}' | cut -c 1-8).conf"
+                fi
+                
+                manage_blackhole "$DOMAIN_DIR"
+                safe_reload
             fi
         fi
     done
-    echo -e "==============================================\n"
-
-    echo "1. 挂载新路由"
-    echo "2. 物理截断路由"
-    local op_choice
-    read -p "选择操作: " op_choice
-
-    if [ "$op_choice" == "1" ]; then
-        local TARGET_PROTO=""
-        local TARGET_DOMAIN=""
-        local API_PATH TARGET_PATH
-
-        # 智能上下文继承：命中已有源站则提示沿用
-        if [ -n "$auto_target" ]; then
-            echo -e "探测到当前主源站为: ${CYAN}${auto_proto}://${auto_target}${NC}"
-            read -p "是否直接沿用该源站？[Y/n] (默认回车沿用): " use_auto
-            if [[ ! "$use_auto" =~ ^[Nn]$ ]]; then
-                TARGET_PROTO="$auto_proto"
-                TARGET_DOMAIN="$auto_target"
-            fi
-        fi
-
-        # 如果用户选择不沿用(输入n) 或 未探测到任何源站，则降级为手动输入
-        if [ -z "$TARGET_DOMAIN" ]; then
-            echo -e "   [1] HTTP\n   [2] HTTPS"
-            local proto_choice
-            while true; do
-                read -p "选择协议 (1/2): " proto_choice
-                if [[ "$proto_choice" == "1" || "$proto_choice" == "2" ]]; then break; fi
-            done
-            TARGET_PROTO=$([ "$proto_choice" == "1" ] && echo "http" || echo "https")
-            while true; do read -p "反代源站 (限 域名/IPv4/localhost): " TARGET_DOMAIN; if validate_target "$TARGET_DOMAIN"; then break; fi; done
-        fi
-
-        while true; do read -p "对外放行路径: " API_PATH; if validate_path "$API_PATH"; then break; fi; done
-        
-        read -p "后端真实映射路径 (直接回车保持透传): " TARGET_PATH
-        if [ -n "$TARGET_PATH" ] && ! validate_path "$TARGET_PATH"; then TARGET_PATH=""; fi
-
-        local SAFE_HASH=$(echo -n "$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
-        local PATH_CONF="$DOMAIN_DIR/route_${SAFE_HASH}.conf"
-        
-        local is_overwrite=0
-        if [ -f "$PATH_CONF" ]; then
-            is_overwrite=1
-            cp "$PATH_CONF" "${PATH_CONF}.bak"
-            CLEANUP_FILES+=("${PATH_CONF}.bak")
-        fi
-
-        generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
-        manage_blackhole "$DOMAIN_DIR"
-
-        if safe_reload; then
-            local meta_disp=$(grep "^# META_DISPLAY:" "$PATH_CONF" | sed 's/^# META_DISPLAY:[[:space:]]*//' 2>/dev/null)
-            echo -e "${GREEN}路由链路贯通成功。${NC}"
-            [ -n "$meta_disp" ] && echo -e "当前生效链路：${YELLOW}${meta_disp}${NC}"
-            
-            # 状态稳定，主动清理本次操作的备份文件
-            if [ $is_overwrite -eq 1 ]; then rm -f "${PATH_CONF}.bak"; fi
-        else
-            echo -e "${RED}路由注入失败，启动对称防抱死恢复...${NC}"
-            if [ $is_overwrite -eq 1 ]; then
-                mv "${PATH_CONF}.bak" "$PATH_CONF"
-            else
-                rm -f "$PATH_CONF"
-            fi
-            manage_blackhole "$DOMAIN_DIR"
-            safe_reload 
-        fi
-
-    elif [ "$op_choice" == "2" ]; then
-        local path_files=()
-        for f in "${conf_list[@]}"; do
-            [[ "$(basename "$f")" != "00_blackhole.conf" ]] && [ -f "$f" ] && path_files+=("$f")
-        done
-
-        if [ ${#path_files[@]} -eq 0 ]; then echo "暂无自定义路由。"; return; fi
-
-        echo -e "\n选择需要截断的链路："
-        for i in "${!path_files[@]}"; do
-            local meta_disp=$(grep "^# META_DISPLAY:" "${path_files[$i]}" | sed 's/^# META_DISPLAY:[[:space:]]*//' 2>/dev/null)
-            if [ -n "$meta_disp" ]; then
-                echo "$((i+1)). $meta_disp"
-            else
-                echo "$((i+1)). [未识别配置] $(basename "${path_files[$i]}")"
-            fi
-        done
-        
-        local p_choice
-        read -p "选择抹除序号 (0 取消): " p_choice
-        if ! validate_number "$p_choice" || (( p_choice < 0 || p_choice > ${#path_files[@]} )); then return; fi
-        if [ "$p_choice" == "0" ]; then return; fi
-
-        local DEL_FILE="${path_files[$((p_choice-1))]}"
-        
-        cp "$DEL_FILE" "${DEL_FILE}.bak"
-        CLEANUP_FILES+=("${DEL_FILE}.bak")
-        rm -f "$DEL_FILE"
-        manage_blackhole "$DOMAIN_DIR"
-        
-        if safe_reload; then
-            rm -f "${DEL_FILE}.bak" # 成功则即时清理废弃物
-            echo -e "${YELLOW}路由链路已物理截断。${NC}"
-        else
-            echo -e "${RED}引擎重载受阻，启动恢复程序...${NC}"
-            mv "${DEL_FILE}.bak" "$DEL_FILE"
-            manage_blackhole "$DOMAIN_DIR"
-            safe_reload
-        fi
-    fi
 }
 
 function list_status() {
