@@ -494,7 +494,7 @@ function list_status() {
                 fi
             done
             echo "----------------------------------------------"
-            ((count++))
+            ((++count))
         fi
     done
     if [ $count -eq 0 ]; then echo "全网静默，无活动状态节点。"; fi
