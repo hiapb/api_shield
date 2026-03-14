@@ -156,9 +156,13 @@ function generate_proxy_block() {
     local save_path=$5
 
     local ssl_headers=""
-    if [ "$target_proto" == "https" ]; then
-        ssl_headers="proxy_ssl_server_name on;\n    proxy_ssl_name $target_domain;"
-    fi
+if [ "$target_proto" == "https" ]; then
+    ssl_headers=$(cat <<EOF
+    proxy_ssl_server_name on;
+    proxy_ssl_name $target_domain;
+EOF
+)
+fi
 
     local clean_target_path="$target_path"
     if [ "$target_path" != "/" ] && [ -n "$target_path" ]; then
