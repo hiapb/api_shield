@@ -395,7 +395,7 @@ function manage_paths() {
             local meta_disp=$(grep "^# META_DISPLAY:" "$conf" | sed 's/^# META_DISPLAY:[[:space:]]*//' 2>/dev/null)
             if [ -n "$meta_disp" ]; then
                 echo -e "  ↳ ${YELLOW}$meta_disp${NC}"
-                ((path_count++))
+                path_count=$((path_count + 1))
             fi
             
             # AST级正则解析：从现有配置中提取上游物理源站记忆
