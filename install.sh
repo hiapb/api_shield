@@ -156,20 +156,19 @@ function generate_proxy_block() {
     local save_path=$5
 
     local ssl_headers=""
-if [ "$target_proto" == "https" ]; then
-    ssl_headers=$(cat <<EOF
-    proxy_ssl_server_name on;
-    proxy_ssl_name $target_domain;
-EOF
-)
-fi
+    if [ "$target_proto" == "https" ]; then
+        ssl_headers="proxy_ssl_server_name on;
+    proxy_ssl_name $target_domain;"
+    fi
 
     local clean_target_path="$target_path"
     if [ "$target_path" != "/" ] && [ -n "$target_path" ]; then
         clean_target_path=$(echo "$target_path" | sed 's/\/$//')
     fi
+    local clean_api_path=$(echo "$api_path" | sed 's/\/$//')
 
-    if [ "$api_path" == "/" ]; then
+    if [ "$clean_api_path" == "" ]; then
+        # 根路径全量代理 ( / )
         local final_url="${target_proto}://${target_domain}"
         if [ -n "$clean_target_path" ] && [ "$clean_target_path" != "/" ]; then
             final_url="${target_proto}://${target_domain}${clean_target_path}/"
@@ -191,12 +190,11 @@ location / {
 }
 EOF
     elif [ -z "$clean_target_path" ]; then
-        local clean_api_path=$(echo "$api_path" | sed 's/\/$//')
-        
+        # 子路径原样透传 (彻底根除 301 重定向问题)
         cat > "$save_path" <<EOF
 # META_TYPE: SUB_ROUTE
-# META_DISPLAY: ${clean_api_path}/ ===> ${target_proto}://${target_domain} (原样透传)
-location ^~ ${clean_api_path}/ {
+# META_DISPLAY: ${clean_api_path} ===> ${target_proto}://${target_domain} (双轨原样透传)
+location = ${clean_api_path} {
     proxy_pass ${target_proto}://${target_domain};
     proxy_set_header Host $target_domain;
     $ssl_headers
@@ -205,17 +203,31 @@ location ^~ ${clean_api_path}/ {
     proxy_connect_timeout 30s;
 }
 
-location = ${clean_api_path} {
-    rewrite ^(.*)\$ ${clean_api_path}/ permanent;
+location ^~ ${clean_api_path}/ {
+    proxy_pass ${target_proto}://${target_domain};
+    proxy_set_header Host $target_domain;
+    $ssl_headers
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_connect_timeout 30s;
 }
 EOF
     else
-        local clean_api_path=$(echo "$api_path" | sed 's/\/$//')
+        # 子路径重写映射
         local safe_regex_api=$(escape_regex "$clean_api_path")
 
         cat > "$save_path" <<EOF
 # META_TYPE: SUB_ROUTE
-# META_DISPLAY: ${clean_api_path}/ ===> ${target_proto}://${target_domain}${clean_target_path}/ (重写)
+# META_DISPLAY: ${clean_api_path} ===> ${target_proto}://${target_domain}${clean_target_path} (双轨重写)
+location = ${clean_api_path} {
+    proxy_pass ${target_proto}://${target_domain}${clean_target_path};
+    proxy_set_header Host $target_domain;
+    $ssl_headers
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_connect_timeout 30s;
+}
+
 location ^~ ${clean_api_path}/ {
     rewrite ^${safe_regex_api}/(.*)\$ ${clean_target_path}/\$1 break;
     proxy_pass ${target_proto}://${target_domain};
@@ -224,10 +236,6 @@ location ^~ ${clean_api_path}/ {
     proxy_set_header X-Real-IP \$remote_addr;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     proxy_connect_timeout 30s;
-}
-
-location = ${clean_api_path} {
-    rewrite ^(.*)\$ ${clean_api_path}/ permanent;
 }
 EOF
     fi
