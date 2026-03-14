@@ -166,6 +166,26 @@ function generate_proxy_block() {
     fi
     local clean_api_path=$(echo "$api_path" | sed 's/\/$//')
 
+    # ====================================================
+    # 核心组件：AI 流式引擎 (SSE) 与长链接大载荷优化模块
+    # ====================================================
+    local AI_OPTIMIZE_BLOCK="
+    proxy_buffering off;
+    proxy_cache off;
+    chunked_transfer_encoding on;
+    
+    tcp_nopush on;
+    tcp_nodelay on;
+    
+    proxy_http_version 1.1;
+    proxy_set_header Connection \"keep-alive\";
+    
+    client_max_body_size 500M;
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 900s;
+    "
+
     if [ "$clean_api_path" == "" ]; then
         # 根路径全量代理 ( / )
         local final_url="${target_proto}://${target_domain}"
@@ -184,8 +204,7 @@ location / {
     $ssl_headers
     proxy_set_header X-Real-IP \$remote_addr;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_connect_timeout 30s;
-    proxy_read_timeout 120s;
+    $AI_OPTIMIZE_BLOCK
 }
 EOF
     elif [ -z "$clean_target_path" ]; then
@@ -199,7 +218,7 @@ location = ${clean_api_path} {
     $ssl_headers
     proxy_set_header X-Real-IP \$remote_addr;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_connect_timeout 30s;
+    $AI_OPTIMIZE_BLOCK
 }
 
 location ^~ ${clean_api_path}/ {
@@ -208,7 +227,7 @@ location ^~ ${clean_api_path}/ {
     $ssl_headers
     proxy_set_header X-Real-IP \$remote_addr;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_connect_timeout 30s;
+    $AI_OPTIMIZE_BLOCK
 }
 EOF
     else
@@ -224,7 +243,7 @@ location = ${clean_api_path} {
     $ssl_headers
     proxy_set_header X-Real-IP \$remote_addr;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_connect_timeout 30s;
+    $AI_OPTIMIZE_BLOCK
 }
 
 location ^~ ${clean_api_path}/ {
@@ -234,7 +253,7 @@ location ^~ ${clean_api_path}/ {
     $ssl_headers
     proxy_set_header X-Real-IP \$remote_addr;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_connect_timeout 30s;
+    $AI_OPTIMIZE_BLOCK
 }
 EOF
     fi
