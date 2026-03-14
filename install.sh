@@ -368,23 +368,67 @@ function manage_paths() {
     local SELECT_DOMAIN="${domains[$((d_choice-1))]}"
     local DOMAIN_DIR="$BASE_DIR/$SELECT_DOMAIN"
 
-    echo -e "\n当前操作域: ${GREEN}$SELECT_DOMAIN${NC}"
+    # ================= 状态嗅探与前置全景展示 =================
+    echo -e "\n=============================================="
+    echo -e "当前操作域: ${GREEN}$SELECT_DOMAIN${NC}"
+    echo -e "当前已挂载链路："
+    
+    shopt -s nullglob
+    local conf_list=("$DOMAIN_DIR"/*.conf)
+    shopt -u nullglob
+    
+    local auto_proto=""
+    local auto_target=""
+
+    for conf in "${conf_list[@]}"; do
+        local meta_disp=$(grep "^# META_DISPLAY:" "$conf" | sed 's/^# META_DISPLAY:[[:space:]]*//' 2>/dev/null)
+        if [ -n "$meta_disp" ]; then
+            echo -e "  ↳ ${YELLOW}$meta_disp${NC}"
+        fi
+        
+        # AST级正则解析：从现有配置中提取上游物理源站
+        if [ -z "$auto_target" ]; then
+            local p_pass=$(grep -m 1 "proxy_pass" "$conf" | awk '{print $2}' | tr -d ';' 2>/dev/null)
+            if [[ "$p_pass" =~ ^(https?)://([^/]+) ]]; then
+                auto_proto="${BASH_REMATCH[1]}"
+                auto_target="${BASH_REMATCH[2]}"
+            fi
+        fi
+    done
+    echo -e "==============================================\n"
+
     echo "1. 挂载新路由"
     echo "2. 物理截断路由"
     local op_choice
     read -p "选择操作: " op_choice
 
     if [ "$op_choice" == "1" ]; then
-        echo -e "   [1] HTTP\n   [2] HTTPS"
-        local proto_choice TARGET_PROTO
-        while true; do
-            read -p "选择协议 (1/2): " proto_choice
-            if [[ "$proto_choice" == "1" || "$proto_choice" == "2" ]]; then break; fi
-        done
-        TARGET_PROTO=$([ "$proto_choice" == "1" ] && echo "http" || echo "https")
+        local TARGET_PROTO=""
+        local TARGET_DOMAIN=""
+        local API_PATH TARGET_PATH
 
-        local TARGET_DOMAIN API_PATH TARGET_PATH
-        while true; do read -p "反代源站 (限 域名/IPv4/localhost): " TARGET_DOMAIN; if validate_target "$TARGET_DOMAIN"; then break; fi; done
+        # 智能上下文继承：命中已有源站则提示沿用
+        if [ -n "$auto_target" ]; then
+            echo -e "探测到当前主源站为: ${CYAN}${auto_proto}://${auto_target}${NC}"
+            read -p "是否直接沿用该源站？[Y/n] (默认回车沿用): " use_auto
+            if [[ ! "$use_auto" =~ ^[Nn]$ ]]; then
+                TARGET_PROTO="$auto_proto"
+                TARGET_DOMAIN="$auto_target"
+            fi
+        fi
+
+        # 如果用户选择不沿用(输入n) 或 未探测到任何源站，则降级为手动输入
+        if [ -z "$TARGET_DOMAIN" ]; then
+            echo -e "   [1] HTTP\n   [2] HTTPS"
+            local proto_choice
+            while true; do
+                read -p "选择协议 (1/2): " proto_choice
+                if [[ "$proto_choice" == "1" || "$proto_choice" == "2" ]]; then break; fi
+            done
+            TARGET_PROTO=$([ "$proto_choice" == "1" ] && echo "http" || echo "https")
+            while true; do read -p "反代源站 (限 域名/IPv4/localhost): " TARGET_DOMAIN; if validate_target "$TARGET_DOMAIN"; then break; fi; done
+        fi
+
         while true; do read -p "对外放行路径: " API_PATH; if validate_path "$API_PATH"; then break; fi; done
         
         read -p "后端真实映射路径 (直接回车保持透传): " TARGET_PATH
@@ -422,10 +466,6 @@ function manage_paths() {
         fi
 
     elif [ "$op_choice" == "2" ]; then
-        shopt -s nullglob
-        local conf_list=("$DOMAIN_DIR"/*.conf)
-        shopt -u nullglob
-        
         local path_files=()
         for f in "${conf_list[@]}"; do
             [[ "$(basename "$f")" != "00_blackhole.conf" ]] && [ -f "$f" ] && path_files+=("$f")
@@ -433,6 +473,7 @@ function manage_paths() {
 
         if [ ${#path_files[@]} -eq 0 ]; then echo "暂无自定义路由。"; return; fi
 
+        echo -e "\n选择需要截断的链路："
         for i in "${!path_files[@]}"; do
             local meta_disp=$(grep "^# META_DISPLAY:" "${path_files[$i]}" | sed 's/^# META_DISPLAY:[[:space:]]*//' 2>/dev/null)
             if [ -n "$meta_disp" ]; then
