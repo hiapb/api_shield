@@ -621,6 +621,46 @@ function delete_domain() {
     echo -e "${GREEN}节点 [$DEL_DOMAIN] 的所有痕迹已从底座抹去。${NC}"
 }
 
+
+function uninstall_system() {
+    echo -e "\n${RED}================ [ 毁灭级操作警告 ] =================${NC}"
+    echo -e "${YELLOW}您正在触发网关矩阵的自毁程序。此操作将执行物理扇区级的彻底净化，包含：${NC}"
+    echo -e "  1. 暴力阻断并卸载 Nginx 与 Certbot 核心引擎"
+    echo -e "  2. ${RED}无差别抹除${NC} /etc/nginx 所有配置 (包含非本系统创建的其他站点！)"
+    echo -e "  3. 吊销并焚毁 /etc/letsencrypt 下的所有 TLS 证书资产"
+    echo -e "  4. 销毁网关矩阵隔离目录 ($BASE_DIR) 及 ACME 验证目录"
+    echo -e "\n${RED}极度危险：如果此台物理机/VPS 上还有其他依赖 Nginx 的业务，它们将随之瞬间蒸发！${NC}"
+    
+    local confirm_destroy
+    read -p "若已评估所有损失并决意销毁，请输入大写 'DESTROY' 确认执行: " confirm_destroy
+    
+    if [ "$confirm_destroy" != "DESTROY" ]; then
+        echo -e "\n${GREEN}[系统哨兵] 校验密令不匹配，自毁程序已中止，系统安然无恙。${NC}"
+        return
+    fi
+
+    echo -e "\n${CYAN}>>> 开始执行降维打击，剥离核心服务...${NC}"
+    systemctl stop nginx >/dev/null 2>&1
+    systemctl disable nginx >/dev/null 2>&1
+
+    echo -e "${CYAN}>>> 正在拆除底层依赖组件 (Nginx & Certbot)...${NC}"
+    # purge 会清理通过 apt 安装的包以及它们的系统全局配置文件
+    apt-get purge -y nginx nginx-common nginx-core certbot >/dev/null 2>&1
+    apt-get autoremove -y >/dev/null 2>&1
+
+    echo -e "${CYAN}>>> 正在执行深度目录焚毁，不留任何死角...${NC}"
+    rm -rf /etc/nginx
+    rm -rf /etc/letsencrypt
+    rm -rf /var/lib/letsencrypt
+    rm -rf /var/log/letsencrypt
+    rm -rf "$ACME_DIR"
+    rm -rf "$BASE_DIR"
+
+    echo -e "${GREEN}净化完成。API 零信任矩阵网关已从当前物理空间彻底抹除。${NC}"
+    echo -e "控制权已交还，系统将在此次会话后退出。"
+    exit 0
+}
+
 init_env
 clear
 while true; do
@@ -631,6 +671,7 @@ while true; do
     echo "  2. 管理内部路由矩阵"
     echo "  3. 视察全景透视状态"
     echo "  4. 彻底摧毁网关节点"
+    echo "  5. 毁灭级系统全量卸载"
     echo "  0. 安全退出"
     echo "----------------------------------------------"
     read -p "请输入指令: " menu_choice
@@ -640,6 +681,7 @@ while true; do
         2) manage_paths ;;
         3) list_status ;;
         4) delete_domain ;;
+        5) uninstall_system ;;
         0) echo -e "${GREEN}控制权已交还。${NC}\n"; exit 0 ;;
         *) echo -e "${RED}非法指令。${NC}" ;;
     esac
