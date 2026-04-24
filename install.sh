@@ -652,9 +652,17 @@ function uninstall_system() {
     systemctl disable nginx >/dev/null 2>&1
 
     echo -e "${CYAN}>>> 正在拆除底层依赖组件 (Nginx & Certbot)...${NC}"
-    # purge 会清理通过 apt 安装的包以及它们的系统全局配置文件
-    apt-get purge -y nginx nginx-common nginx-core certbot >/dev/null 2>&1
+    
+    # [核心修复注入]
+    # 注入非交互式环境变量，彻底压制 dpkg/debconf 的所有 TUI 弹窗
+    export DEBIAN_FRONTEND=noninteractive
+    
+    # 引入强制参数，确保包管理器不再询问关于配置文件的操作
+    apt-get purge -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" nginx nginx-common nginx-core certbot >/dev/null 2>&1
     apt-get autoremove -y >/dev/null 2>&1
+    
+    # 撤销环境变量，保持系统终端后续整洁
+    unset DEBIAN_FRONTEND
 
     echo -e "${CYAN}>>> 正在执行深度目录焚毁，不留任何死角...${NC}"
     rm -rf /etc/nginx
