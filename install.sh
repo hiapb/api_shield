@@ -170,27 +170,28 @@ function generate_proxy_block() {
     # 核心组件：AI 流式引擎 (SSE) 与长链接大载荷优化模块
     # ====================================================
     local AI_OPTIMIZE_BLOCK="
-    proxy_buffering off;
-    proxy_cache off;
-    proxy_request_buffering off;
-    chunked_transfer_encoding on;
-
-    tcp_nopush on;
-    tcp_nodelay on;
-
     proxy_http_version 1.1;
+
     proxy_set_header X-Forwarded-Proto \$scheme;
     proxy_set_header REMOTE-HOST \$remote_addr;
     proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection \"\";
+    proxy_set_header Accept-Encoding \"\";
 
     client_max_body_size 500M;
-    proxy_connect_timeout 60s;
-    proxy_send_timeout 1200s;
-    proxy_read_timeout 1200s;
-    send_timeout 1200s;
 
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 1800s;
+    proxy_read_timeout 1800s;
+    send_timeout 1800s;
+
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_cache off;
     proxy_next_upstream off;
+
+    add_header X-Accel-Buffering no always;
+    add_header Cache-Control no-cache always;
     "
 
     if [ "$clean_api_path" == "" ]; then
