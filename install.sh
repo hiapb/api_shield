@@ -348,11 +348,23 @@ EOF
     generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
     manage_blackhole "$BASE_DIR/$MY_DOMAIN"
 
+    # =========================================================================
+    # [核心修复区] 彻底解决证书断期问题，保障 Certbot 后台探针不受代理流量干扰
+    # =========================================================================
     cat > "$TMP_CONF" <<EOF
 server {
     listen 80;
     server_name $MY_DOMAIN;
-    return 301 https://\$host\$request_uri;
+    
+    # 物理隔离 ACME 探针流量，绝对豁免重定向
+    location /.well-known/acme-challenge/ {
+        root $ACME_DIR;
+    }
+    
+    # 纯净业务流量执行强制 HTTPS 升维
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
 }
 
 server {
@@ -653,8 +665,6 @@ function uninstall_system() {
 
     echo -e "${CYAN}>>> 正在拆除底层依赖组件 (Nginx & Certbot)...${NC}"
     
-    # [核心修复注入]
-    # 注入非交互式环境变量，彻底压制 dpkg/debconf 的所有 TUI 弹窗
     export DEBIAN_FRONTEND=noninteractive
     
     # 引入强制参数，确保包管理器不再询问关于配置文件的操作
