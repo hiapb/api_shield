@@ -267,6 +267,321 @@ EOF
     fi
 }
 
+function generate_ai_api_bundle_block() {
+    local target_proto=$1
+    local target_domain=$2
+    local target_path=$3
+    local save_path=$4
+
+    local ssl_headers=""
+    if [ "$target_proto" == "https" ]; then
+        ssl_headers="proxy_ssl_server_name on;
+    proxy_ssl_name $target_domain;"
+    fi
+
+    local clean_target_path="$target_path"
+    if [ "$clean_target_path" == "/" ]; then
+        clean_target_path=""
+    elif [ -n "$clean_target_path" ]; then
+        clean_target_path=$(echo "$clean_target_path" | sed 's/\/$//')
+    fi
+
+    local upstream="${target_proto}://${target_domain}"
+    local meta_target="$upstream"
+    if [ -n "$clean_target_path" ]; then
+        meta_target="${upstream}${clean_target_path}"
+    fi
+
+    local common_headers="
+    proxy_http_version 1.1;
+    proxy_set_header Host $target_domain;
+    $ssl_headers
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_set_header REMOTE-HOST \$remote_addr;
+    proxy_set_header Connection \"\";
+    proxy_set_header Accept-Encoding \"\";
+    "
+
+    local stream_opts="
+    client_max_body_size 500M;
+    proxy_connect_timeout 120s;
+    proxy_send_timeout 3600s;
+    proxy_read_timeout 3600s;
+    send_timeout 3600s;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_next_upstream off;
+    gzip off;
+    add_header X-Accel-Buffering no always;
+    add_header Cache-Control \"no-cache, no-transform\" always;
+    "
+
+    local upload_opts="
+    client_max_body_size 800M;
+    proxy_connect_timeout 120s;
+    proxy_send_timeout 3600s;
+    proxy_read_timeout 3600s;
+    send_timeout 3600s;
+    proxy_request_buffering on;
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_next_upstream off;
+    gzip off;
+    add_header Cache-Control \"no-cache, no-transform\" always;
+    "
+
+    local normal_opts="
+    client_max_body_size 500M;
+    proxy_connect_timeout 120s;
+    proxy_send_timeout 1800s;
+    proxy_read_timeout 1800s;
+    send_timeout 1800s;
+    proxy_request_buffering on;
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_next_upstream off;
+    gzip off;
+    add_header Cache-Control \"no-cache, no-transform\" always;
+    "
+
+    local exact_stream_proxy="$upstream"
+    local exact_v1_responses_proxy="$upstream"
+    local exact_chat_proxy="$upstream"
+    local exact_completions_proxy="$upstream"
+    local exact_messages_proxy="$upstream"
+    local exact_count_tokens_proxy="$upstream"
+    local exact_batch_messages_proxy="$upstream"
+    local exact_images_generations_proxy="$upstream"
+    local exact_images_edits_proxy="$upstream"
+    local exact_images_variations_proxy="$upstream"
+    local exact_audio_transcriptions_proxy="$upstream"
+    local exact_audio_translations_proxy="$upstream"
+    local exact_audio_speech_proxy="$upstream"
+    local exact_models_proxy="$upstream"
+    local exact_embeddings_proxy="$upstream"
+    local exact_moderations_proxy="$upstream"
+    local exact_antigravity_messages_proxy="$upstream"
+
+    local responses_rewrite=""
+    local codex_rewrite=""
+    local v1beta_rewrite=""
+    local antigravity_v1beta_rewrite=""
+    local v1_files_rewrite=""
+    local v1_uploads_rewrite=""
+    local v1_batches_rewrite=""
+    local v1_fine_tuning_rewrite=""
+    local v1_fallback_rewrite=""
+
+    if [ -n "$clean_target_path" ]; then
+        exact_stream_proxy="${upstream}${clean_target_path}/responses"
+        exact_v1_responses_proxy="${upstream}${clean_target_path}/v1/responses"
+        exact_chat_proxy="${upstream}${clean_target_path}/v1/chat/completions"
+        exact_completions_proxy="${upstream}${clean_target_path}/v1/completions"
+        exact_messages_proxy="${upstream}${clean_target_path}/v1/messages"
+        exact_count_tokens_proxy="${upstream}${clean_target_path}/v1/messages/count_tokens"
+        exact_batch_messages_proxy="${upstream}${clean_target_path}/v1/messages/batches"
+        exact_images_generations_proxy="${upstream}${clean_target_path}/v1/images/generations"
+        exact_images_edits_proxy="${upstream}${clean_target_path}/v1/images/edits"
+        exact_images_variations_proxy="${upstream}${clean_target_path}/v1/images/variations"
+        exact_audio_transcriptions_proxy="${upstream}${clean_target_path}/v1/audio/transcriptions"
+        exact_audio_translations_proxy="${upstream}${clean_target_path}/v1/audio/translations"
+        exact_audio_speech_proxy="${upstream}${clean_target_path}/v1/audio/speech"
+        exact_models_proxy="${upstream}${clean_target_path}/v1/models"
+        exact_embeddings_proxy="${upstream}${clean_target_path}/v1/embeddings"
+        exact_moderations_proxy="${upstream}${clean_target_path}/v1/moderations"
+        exact_antigravity_messages_proxy="${upstream}${clean_target_path}/antigravity/v1/messages"
+
+        responses_rewrite="    rewrite ^/responses/(.*)\$ ${clean_target_path}/responses/\$1 break;"
+        codex_rewrite="    rewrite ^/backend-api/codex/responses/(.*)\$ ${clean_target_path}/backend-api/codex/responses/\$1 break;"
+        v1beta_rewrite="    rewrite ^/v1beta/(.*)\$ ${clean_target_path}/v1beta/\$1 break;"
+        antigravity_v1beta_rewrite="    rewrite ^/antigravity/v1beta/(.*)\$ ${clean_target_path}/antigravity/v1beta/\$1 break;"
+        v1_files_rewrite="    rewrite ^/v1/files(.*)\$ ${clean_target_path}/v1/files\$1 break;"
+        v1_uploads_rewrite="    rewrite ^/v1/uploads(.*)\$ ${clean_target_path}/v1/uploads\$1 break;"
+        v1_batches_rewrite="    rewrite ^/v1/batches(.*)\$ ${clean_target_path}/v1/batches\$1 break;"
+        v1_fine_tuning_rewrite="    rewrite ^/v1/fine_tuning(.*)\$ ${clean_target_path}/v1/fine_tuning\$1 break;"
+        v1_fallback_rewrite="    rewrite ^/v1/(.*)\$ ${clean_target_path}/v1/\$1 break;"
+    fi
+
+    cat > "$save_path" <<EOF
+# META_TYPE: AI_BUNDLE
+# META_DISPLAY: AI API 全家桶 ===> $meta_target
+
+location = /v1/responses {
+    proxy_pass $exact_v1_responses_proxy;
+    $common_headers
+    $stream_opts
+}
+
+location = /responses {
+    proxy_pass $exact_stream_proxy;
+    $common_headers
+    $stream_opts
+}
+
+location ^~ /responses/ {
+$responses_rewrite
+    proxy_pass $upstream;
+    $common_headers
+    $stream_opts
+}
+
+location = /backend-api/codex/responses {
+    proxy_pass ${upstream}${clean_target_path}/backend-api/codex/responses;
+    $common_headers
+    $stream_opts
+}
+
+location ^~ /backend-api/codex/responses/ {
+$codex_rewrite
+    proxy_pass $upstream;
+    $common_headers
+    $stream_opts
+}
+
+location = /v1/chat/completions {
+    proxy_pass $exact_chat_proxy;
+    $common_headers
+    $stream_opts
+}
+
+location = /v1/completions {
+    proxy_pass $exact_completions_proxy;
+    $common_headers
+    $stream_opts
+}
+
+location = /v1/messages {
+    proxy_pass $exact_messages_proxy;
+    $common_headers
+    $stream_opts
+}
+
+location = /antigravity/v1/messages {
+    proxy_pass $exact_antigravity_messages_proxy;
+    $common_headers
+    $stream_opts
+}
+
+location ^~ /v1beta/ {
+$v1beta_rewrite
+    proxy_pass $upstream;
+    $common_headers
+    $stream_opts
+}
+
+location ^~ /antigravity/v1beta/ {
+$antigravity_v1beta_rewrite
+    proxy_pass $upstream;
+    $common_headers
+    $stream_opts
+}
+
+location = /v1/messages/count_tokens {
+    proxy_pass $exact_count_tokens_proxy;
+    $common_headers
+    $normal_opts
+}
+
+location = /v1/messages/batches {
+    proxy_pass $exact_batch_messages_proxy;
+    $common_headers
+    $upload_opts
+}
+
+location = /v1/images/generations {
+    proxy_pass $exact_images_generations_proxy;
+    $common_headers
+    $upload_opts
+}
+
+location = /v1/images/edits {
+    proxy_pass $exact_images_edits_proxy;
+    $common_headers
+    $upload_opts
+}
+
+location = /v1/images/variations {
+    proxy_pass $exact_images_variations_proxy;
+    $common_headers
+    $upload_opts
+}
+
+location ^~ /v1/files {
+$v1_files_rewrite
+    proxy_pass $upstream;
+    $common_headers
+    $upload_opts
+}
+
+location ^~ /v1/uploads {
+$v1_uploads_rewrite
+    proxy_pass $upstream;
+    $common_headers
+    $upload_opts
+}
+
+location ^~ /v1/batches {
+$v1_batches_rewrite
+    proxy_pass $upstream;
+    $common_headers
+    $upload_opts
+}
+
+location ^~ /v1/fine_tuning {
+$v1_fine_tuning_rewrite
+    proxy_pass $upstream;
+    $common_headers
+    $upload_opts
+}
+
+location = /v1/audio/transcriptions {
+    proxy_pass $exact_audio_transcriptions_proxy;
+    $common_headers
+    $upload_opts
+}
+
+location = /v1/audio/translations {
+    proxy_pass $exact_audio_translations_proxy;
+    $common_headers
+    $upload_opts
+}
+
+location = /v1/audio/speech {
+    proxy_pass $exact_audio_speech_proxy;
+    $common_headers
+    $upload_opts
+}
+
+location = /v1/models {
+    proxy_pass $exact_models_proxy;
+    $common_headers
+    $normal_opts
+}
+
+location = /v1/embeddings {
+    proxy_pass $exact_embeddings_proxy;
+    $common_headers
+    $normal_opts
+}
+
+location = /v1/moderations {
+    proxy_pass $exact_moderations_proxy;
+    $common_headers
+    $normal_opts
+}
+
+location /v1/ {
+$v1_fallback_rewrite
+    proxy_pass $upstream;
+    $common_headers
+    $normal_opts
+}
+EOF
+}
+
 function deploy_domain() {
     echo -e "\n${CYAN}--- 部署全新网关节点 ---${NC}"
     
@@ -287,10 +602,11 @@ function deploy_domain() {
     echo "   [2] HTTPS (外部反代)"
     local proto_choice TARGET_PROTO
     while true; do
-        read -p "   请选择 (1/2): " proto_choice
+        read -p "请选择 (1/2): " proto_choice
         if [[ "$proto_choice" == "1" || "$proto_choice" == "2" ]]; then break; fi
     done
     TARGET_PROTO=$([ "$proto_choice" == "1" ] && echo "http" || echo "https")
+    local ROUTE_PROFILE
 
     while true; do
         read -p "3. 请输入反代源站 (限 域名/IPv4/localhost[:port]): " TARGET_DOMAIN
@@ -298,11 +614,22 @@ function deploy_domain() {
         echo -e "${RED}目标格式非法 (暂不支持 IPv6)。${NC}"
     done
 
+    echo -e "4. 请选择路由类型:"
+    echo "   [1] 通用反代"
+    echo "   [2] AI API 全家桶"
     while true; do
-        read -p "4. 请输入对外放行路径 (输入 / 为全量穿透): " API_PATH
-        if validate_path "$API_PATH"; then break; fi
-        echo -e "${RED}路径非法。${NC}"
+        read -p "   请选择 (1/2): " ROUTE_PROFILE
+        if [[ "$ROUTE_PROFILE" == "1" || "$ROUTE_PROFILE" == "2" ]]; then break; fi
     done
+
+    API_PATH="/"
+    if [ "$ROUTE_PROFILE" == "1" ]; then
+        while true; do
+            read -p "   ↳ 请输入对外放行路径 (输入 / 为全量穿透): " API_PATH
+            if validate_path "$API_PATH"; then break; fi
+            echo -e "${RED}路径非法。${NC}"
+        done
+    fi
 
     read -p "5. 请输入后端真实映射路径 (直接回车保持原样透传): " TARGET_PATH
     if [ -n "$TARGET_PATH" ] && ! validate_path "$TARGET_PATH"; then
@@ -342,10 +669,15 @@ EOF
     fi
 
     mkdir -p "$BASE_DIR/$MY_DOMAIN"
-    local SAFE_HASH=$(echo -n "$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
-    local PATH_CONF="$BASE_DIR/$MY_DOMAIN/route_${SAFE_HASH}.conf"
-
-    generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
+    local PATH_CONF
+    if [ "$ROUTE_PROFILE" == "2" ]; then
+        PATH_CONF="$BASE_DIR/$MY_DOMAIN/route_ai_bundle.conf"
+        generate_ai_api_bundle_block "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
+    else
+        local SAFE_HASH=$(echo -n "$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
+        PATH_CONF="$BASE_DIR/$MY_DOMAIN/route_${SAFE_HASH}.conf"
+        generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
+    fi
     manage_blackhole "$BASE_DIR/$MY_DOMAIN"
 
     # =========================================================================
@@ -370,7 +702,8 @@ server {
 server {
     listen 443 ssl http2;
     server_name $MY_DOMAIN;
-    client_max_body_size 500M;
+    underscores_in_headers on;
+    client_max_body_size 800M;
     ssl_certificate /etc/letsencrypt/live/$MY_DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$MY_DOMAIN/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -453,8 +786,8 @@ function manage_paths() {
         echo -e "==============================================\n"
 
         echo "1. 挂载新路由"
-        echo "2. 物理截断路由"
-        echo "0. 返回主菜单"
+        echo "2. 删除路由"
+        echo "0. 返回"
         local op_choice
         read -p "选择操作: " op_choice
 
@@ -464,6 +797,7 @@ function manage_paths() {
             local TARGET_PROTO=""
             local TARGET_DOMAIN=""
             local API_PATH TARGET_PATH
+            local ROUTE_PROFILE
 
             if [ -n "$auto_target" ]; then
                 echo -e "探测到当前主源站记忆为: ${CYAN}${auto_proto}://${auto_target}${NC}"
@@ -476,22 +810,37 @@ function manage_paths() {
 
             if [ -z "$TARGET_DOMAIN" ]; then
                 echo -e "   [1] HTTP\n   [2] HTTPS"
-                local proto_choice
                 while true; do
                     read -p "选择协议 (1/2): " proto_choice
                     if [[ "$proto_choice" == "1" || "$proto_choice" == "2" ]]; then break; fi
                 done
                 TARGET_PROTO=$([ "$proto_choice" == "1" ] && echo "http" || echo "https")
-                while true; do read -p "反代源站 (限 域名/IPv4/localhost): " TARGET_DOMAIN; if validate_target "$TARGET_DOMAIN"; then break; fi; done
+                while true; do read -p "反代源站 (域名/IPv4/localhost[:port]): " TARGET_DOMAIN; if validate_target "$TARGET_DOMAIN"; then break; fi; done
             fi
 
-            while true; do read -p "对外放行路径: " API_PATH; if validate_path "$API_PATH"; then break; fi; done
+            echo -e "请选择路由类型:"
+            echo "   [1] 通用反代"
+            echo "   [2] AI API 全家桶"
+            while true; do
+                read -p "请选择 (1/2): " ROUTE_PROFILE
+                if [[ "$ROUTE_PROFILE" == "1" || "$ROUTE_PROFILE" == "2" ]]; then break; fi
+            done
+
+            API_PATH="/"
+            if [ "$ROUTE_PROFILE" == "1" ]; then
+                while true; do read -p "对外放行路径: " API_PATH; if validate_path "$API_PATH"; then break; fi; done
+            fi
             
             read -p "后端真实映射路径 (直接回车保持透传): " TARGET_PATH
             if [ -n "$TARGET_PATH" ] && ! validate_path "$TARGET_PATH"; then TARGET_PATH=""; fi
 
-            local SAFE_HASH=$(echo -n "$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
-            local PATH_CONF="$DOMAIN_DIR/route_${SAFE_HASH}.conf"
+            local PATH_CONF
+            if [ "$ROUTE_PROFILE" == "2" ]; then
+                PATH_CONF="$DOMAIN_DIR/route_ai_bundle.conf"
+            else
+                local SAFE_HASH=$(echo -n "$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
+                PATH_CONF="$DOMAIN_DIR/route_${SAFE_HASH}.conf"
+            fi
             
             local is_overwrite=0
             if [ -f "$PATH_CONF" ]; then
@@ -500,7 +849,11 @@ function manage_paths() {
                 CLEANUP_FILES+=("${PATH_CONF}.bak")
             fi
 
-            generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
+            if [ "$ROUTE_PROFILE" == "2" ]; then
+                generate_ai_api_bundle_block "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
+            else
+                generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
+            fi
             manage_blackhole "$DOMAIN_DIR"
 
             if safe_reload; then
@@ -515,8 +868,8 @@ function manage_paths() {
                 fi
                 manage_blackhole "$DOMAIN_DIR"
                 safe_reload 
-            fi
 
+            fi
         elif [ "$op_choice" == "2" ]; then
             local path_files=()
             for f in "${conf_list[@]}"; do
@@ -528,7 +881,7 @@ function manage_paths() {
                 continue
             fi
 
-            echo -e "\n选择需要截断的链路："
+            echo -e "\n选择需要删除的路由:"
             for i in "${!path_files[@]}"; do
                 local meta_disp=$(grep "^# META_DISPLAY:" "${path_files[$i]}" | sed 's/^# META_DISPLAY:[[:space:]]*//' 2>/dev/null)
                 if [ -n "$meta_disp" ]; then
