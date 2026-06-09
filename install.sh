@@ -797,7 +797,6 @@ function manage_paths() {
             local TARGET_PROTO=""
             local TARGET_DOMAIN=""
             local API_PATH TARGET_PATH
-            local ROUTE_PROFILE
 
             if [ -n "$auto_target" ]; then
                 echo -e "探测到当前主源站记忆为: ${CYAN}${auto_proto}://${auto_target}${NC}"
@@ -809,7 +808,8 @@ function manage_paths() {
             fi
 
             if [ -z "$TARGET_DOMAIN" ]; then
-                echo -e "   [1] HTTP\n   [2] HTTPS"
+                echo -e "   [1] HTTP
+   [2] HTTPS"
                 while true; do
                     read -p "选择协议 (1/2): " proto_choice
                     if [[ "$proto_choice" == "1" || "$proto_choice" == "2" ]]; then break; fi
@@ -818,58 +818,38 @@ function manage_paths() {
                 while true; do read -p "反代源站 (域名/IPv4/localhost[:port]): " TARGET_DOMAIN; if validate_target "$TARGET_DOMAIN"; then break; fi; done
             fi
 
-            echo -e "请选择路由类型:"
-            echo "   [1] 通用反代"
-            echo "   [2] AI API 全家桶"
+            # 管理菜单只负责“追加普通路径路由”，AI API 全家桶只在菜单 1 首次部署时选择。
+            # 否则反复选择 AI API 全家桶会固定写入 route_ai_bundle.conf，导致旧全家桶配置被覆盖。
             while true; do
-                read -p "请选择 (1/2): " ROUTE_PROFILE
-                if [[ "$ROUTE_PROFILE" == "1" || "$ROUTE_PROFILE" == "2" ]]; then break; fi
+                read -p "对外放行路径 (例如 /api，输入 / 为全量穿透): " API_PATH
+                if validate_path "$API_PATH"; then break; fi
+                echo -e "${RED}路径非法。${NC}"
             done
-
-            API_PATH="/"
-            if [ "$ROUTE_PROFILE" == "1" ]; then
-                while true; do read -p "对外放行路径: " API_PATH; if validate_path "$API_PATH"; then break; fi; done
-            fi
             
             read -p "后端真实映射路径 (直接回车保持透传): " TARGET_PATH
-            if [ -n "$TARGET_PATH" ] && ! validate_path "$TARGET_PATH"; then TARGET_PATH=""; fi
+            if [ -n "$TARGET_PATH" ] && ! validate_path "$TARGET_PATH" ]; then TARGET_PATH=""; fi
 
-            local PATH_CONF
-            if [ "$ROUTE_PROFILE" == "2" ]; then
-                PATH_CONF="$DOMAIN_DIR/route_ai_bundle.conf"
-            else
-                local SAFE_HASH=$(echo -n "$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
-                PATH_CONF="$DOMAIN_DIR/route_${SAFE_HASH}.conf"
-            fi
+            local SAFE_HASH=$(echo -n "$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
+            local PATH_CONF="$DOMAIN_DIR/route_${SAFE_HASH}.conf"
             
-            local is_overwrite=0
             if [ -f "$PATH_CONF" ]; then
-                is_overwrite=1
-                cp "$PATH_CONF" "${PATH_CONF}.bak"
-                CLEANUP_FILES+=("${PATH_CONF}.bak")
+                echo -e "${RED}该对外路径已存在：$API_PATH${NC}"
+                echo -e "${YELLOW}为避免把旧路由覆盖，请先删除原路由，或换一个新路径。${NC}"
+                continue
             fi
 
-            if [ "$ROUTE_PROFILE" == "2" ]; then
-                generate_ai_api_bundle_block "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
-            else
-                generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
-            fi
+            generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
             manage_blackhole "$DOMAIN_DIR"
 
             if safe_reload; then
                 echo -e "${GREEN}路由链路贯通成功。${NC}"
-                if [ $is_overwrite -eq 1 ]; then rm -f "${PATH_CONF}.bak"; fi
             else
-                echo -e "${RED}路由注入失败，启动对称防抱死恢复...${NC}"
-                if [ $is_overwrite -eq 1 ]; then
-                    mv "${PATH_CONF}.bak" "$PATH_CONF"
-                else
-                    rm -f "$PATH_CONF"
-                fi
+                echo -e "${RED}路由注入失败，已回滚本次新增。${NC}"
+                rm -f "$PATH_CONF"
                 manage_blackhole "$DOMAIN_DIR"
                 safe_reload 
-
             fi
+
         elif [ "$op_choice" == "2" ]; then
             local path_files=()
             for f in "${conf_list[@]}"; do
