@@ -572,7 +572,7 @@ EOF
 function deploy_domain() {
     echo -e "\n${CYAN}--- 部署全新网关节点 ---${NC}"
     
-    local MY_DOMAIN TARGET_DOMAIN API_PATH TARGET_PATH
+    local MY_DOMAIN TARGET_DOMAIN API_PATH TARGET_PATH DOMAIN_TYPE
     
     while true; do
         read -p "1. 请输入网关域名 (例 api.domain.com): " MY_DOMAIN
@@ -608,6 +608,7 @@ function deploy_domain() {
         read -p "   请选择 (1/2): " ROUTE_PROFILE
         if [[ "$ROUTE_PROFILE" == "1" || "$ROUTE_PROFILE" == "2" ]]; then break; fi
     done
+    DOMAIN_TYPE=$([ "$ROUTE_PROFILE" == "2" ] && echo "AI_GATEWAY" || echo "COMMON_PROXY")
 
     while true; do
         if [ "$ROUTE_PROFILE" == "2" ]; then
@@ -657,6 +658,7 @@ EOF
     fi
 
     mkdir -p "$BASE_DIR/$MY_DOMAIN"
+    echo "$DOMAIN_TYPE" > "$BASE_DIR/$MY_DOMAIN/.domain_type"
     local PATH_CONF
     local SAFE_HASH=$(echo -n "$ROUTE_PROFILE:$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
     if [ "$ROUTE_PROFILE" == "2" ]; then
@@ -734,11 +736,29 @@ function manage_paths() {
     
     local SELECT_DOMAIN="${domains[$((d_choice-1))]}"
     local DOMAIN_DIR="$BASE_DIR/$SELECT_DOMAIN"
+    local DOMAIN_TYPE=""
+    if [ -f "$DOMAIN_DIR/.domain_type" ]; then
+        DOMAIN_TYPE=$(cat "$DOMAIN_DIR/.domain_type" 2>/dev/null | tr -d '[:space:]')
+    fi
+    # 兼容旧版本：没有 .domain_type 时，根据已有配置自动推断一次
+    if [ -z "$DOMAIN_TYPE" ]; then
+        if grep -Rqs "# META_TYPE: AI_BUNDLE" "$DOMAIN_DIR"/*.conf 2>/dev/null; then
+            DOMAIN_TYPE="AI_GATEWAY"
+        else
+            DOMAIN_TYPE="COMMON_PROXY"
+        fi
+        echo "$DOMAIN_TYPE" > "$DOMAIN_DIR/.domain_type"
+    fi
 
     # ================= 交互状态机循环 =================
     while true; do
         echo -e "\n=============================================="
         echo -e "当前操作域: ${GREEN}$SELECT_DOMAIN${NC}"
+        if [ "$DOMAIN_TYPE" == "AI_GATEWAY" ]; then
+            echo -e "节点类型: ${CYAN}AI API 全家桶${NC}"
+        else
+            echo -e "节点类型: ${CYAN}通用反代${NC}"
+        fi
         echo -e "当前已挂载链路："
         
         shopt -s nullglob
@@ -807,17 +827,9 @@ function manage_paths() {
                 while true; do read -p "反代源站 (域名/IPv4/localhost[:port]): " TARGET_DOMAIN; if validate_target "$TARGET_DOMAIN"; then break; fi; done
             fi
 
-            echo -e "请选择路由类型:"
-            echo "   [1] 通用反代"
-            echo "   [2] AI API 全家桶"
             while true; do
-                read -p "请选择 (1/2): " ROUTE_PROFILE
-                if [[ "$ROUTE_PROFILE" == "1" || "$ROUTE_PROFILE" == "2" ]]; then break; fi
-            done
-
-            while true; do
-                if [ "$ROUTE_PROFILE" == "2" ]; then
-                    read -p "AI 全家桶对外挂载路径 (例如 /cn，输入 / 表示根路径): " API_PATH
+                if [ "$DOMAIN_TYPE" == "AI_GATEWAY" ]; then
+                    read -p "AI 全家桶对外挂载路径 (例如 /openai，输入 / 表示根路径): " API_PATH
                 else
                     read -p "对外放行路径 (例如 /api，输入 / 为全量穿透): " API_PATH
                 fi
@@ -828,9 +840,9 @@ function manage_paths() {
             read -p "后端真实映射路径 (直接回车保持透传): " TARGET_PATH
             if [ -n "$TARGET_PATH" ] && ! validate_path "$TARGET_PATH" ]; then TARGET_PATH=""; fi
 
-            local SAFE_HASH=$(echo -n "$ROUTE_PROFILE:$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
+            local SAFE_HASH=$(echo -n "$DOMAIN_TYPE:$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
             local PATH_CONF
-            if [ "$ROUTE_PROFILE" == "2" ]; then
+            if [ "$DOMAIN_TYPE" == "AI_GATEWAY" ]; then
                 PATH_CONF="$DOMAIN_DIR/route_ai_${SAFE_HASH}.conf"
             else
                 PATH_CONF="$DOMAIN_DIR/route_${SAFE_HASH}.conf"
@@ -842,7 +854,7 @@ function manage_paths() {
                 continue
             fi
 
-            if [ "$ROUTE_PROFILE" == "2" ]; then
+            if [ "$DOMAIN_TYPE" == "AI_GATEWAY" ]; then
                 generate_ai_api_bundle_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
             else
                 generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
@@ -1032,7 +1044,7 @@ init_env
 clear
 while true; do
     echo -e "\n=============================================="
-    echo -e "      ${GREEN}API 零信任矩阵网关 ${NC}"
+    echo -e "      ${GREEN}API 零信任矩阵网关3 ${NC}"
     echo -e "=============================================="
     echo "  1. 部署全新网关防线"
     echo "  2. 管理内部路由矩阵"
