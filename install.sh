@@ -142,7 +142,7 @@ function manage_blackhole() {
     shopt -u nullglob
 
     for f in "${confs[@]}"; do
-        if grep -q "# META_TYPE: ROOT_ROUTE" "$f" 2>/dev/null; then
+        if grep -q "# META_TYPE: ROOT_ROUTE" "$f" 2>/dev/null || grep -q "# META_ROOT: YES" "$f" 2>/dev/null; then
             has_root=1; break
         fi
     done
@@ -309,6 +309,8 @@ function generate_ai_api_bundle_block() {
 
     local meta_mount="/"
     [ -n "$clean_api_path" ] && meta_mount="$clean_api_path"
+    local meta_root_line=""
+    [ -z "$clean_api_path" ] && meta_root_line="# META_ROOT: YES"
 
     local common_headers="
     proxy_http_version 1.1;
@@ -433,6 +435,20 @@ EOF
         local public_prefix="$1"
         local opts="$2"
         if [ -z "$public_prefix" ]; then
+            local root_pass="${upstream}/"
+            if [ -n "$T" ]; then
+                root_pass="${upstream}${T}/"
+            fi
+            cat >> "$save_path" <<EOF
+# 兜底：根路径挂载时，保证 / 和所有 /* 都能放行。
+# 更精确的 AI 专用 location 会优先生效；未枚举的新接口走这里。
+location / {
+    proxy_pass $root_pass;
+    $common_headers
+    $opts
+}
+
+EOF
             return
         fi
         cat >> "$save_path" <<EOF
@@ -456,11 +472,12 @@ EOF
 
     cat > "$save_path" <<EOF
 # META_TYPE: AI_BUNDLE
+$meta_root_line
 # META_DISPLAY: ${meta_mount} AI API 全家桶 ===> $meta_target
 
 EOF
 
-    # 根挂载时不能生成 location = ，所以只生成标准 API 路由；非根挂载额外加整段兜底。
+    # 兜底整体放行：/path 放行 /path 和 /path/*；根挂载 / 放行所有路径。
     _emit_whole_mount_fallback "$P" "$normal_opts"
 
     # ===================== 流式/长连接接口 =====================
@@ -589,6 +606,12 @@ EOF
     fi
 
     mkdir -p "$BASE_DIR/$MY_DOMAIN"
+    # 记录域名级路由类型：菜单 1 决定，菜单 2 只追加路径，不再重复选择类型
+    if [ "$ROUTE_PROFILE" == "2" ]; then
+        echo "2" > "$BASE_DIR/$MY_DOMAIN/.domain_type"
+    else
+        echo "1" > "$BASE_DIR/$MY_DOMAIN/.domain_type"
+    fi
     local PATH_CONF
     local SAFE_HASH=$(echo -n "$ROUTE_PROFILE:$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
     if [ "$ROUTE_PROFILE" == "2" ]; then
@@ -666,11 +689,30 @@ function manage_paths() {
     
     local SELECT_DOMAIN="${domains[$((d_choice-1))]}"
     local DOMAIN_DIR="$BASE_DIR/$SELECT_DOMAIN"
+    local ROUTE_PROFILE=""
+
+    # 域名级路由类型：优先读取菜单 1 写入的 .domain_type；兼容旧版本则从已有配置推断
+    if [ -f "$DOMAIN_DIR/.domain_type" ]; then
+        ROUTE_PROFILE=$(cat "$DOMAIN_DIR/.domain_type" 2>/dev/null | tr -d '[:space:]')
+    fi
+    if [[ "$ROUTE_PROFILE" != "1" && "$ROUTE_PROFILE" != "2" ]]; then
+        if grep -Rqs "# META_TYPE: AI_BUNDLE" "$DOMAIN_DIR"/*.conf 2>/dev/null; then
+            ROUTE_PROFILE="2"
+        else
+            ROUTE_PROFILE="1"
+        fi
+        echo "$ROUTE_PROFILE" > "$DOMAIN_DIR/.domain_type"
+    fi
 
     # ================= 交互状态机循环 =================
     while true; do
         echo -e "\n=============================================="
         echo -e "当前操作域: ${GREEN}$SELECT_DOMAIN${NC}"
+        if [ "$ROUTE_PROFILE" == "2" ]; then
+            echo -e "节点类型: ${CYAN}AI API 全家桶${NC}"
+        else
+            echo -e "节点类型: ${CYAN}通用反代${NC}"
+        fi
         echo -e "当前已挂载链路："
         
         shopt -s nullglob
@@ -717,7 +759,6 @@ function manage_paths() {
             local TARGET_PROTO=""
             local TARGET_DOMAIN=""
             local API_PATH TARGET_PATH
-            local ROUTE_PROFILE
 
             if [ -n "$auto_target" ]; then
                 echo -e "探测到当前主源站记忆为: ${CYAN}${auto_proto}://${auto_target}${NC}"
@@ -738,14 +779,6 @@ function manage_paths() {
                 TARGET_PROTO=$([ "$proto_choice" == "1" ] && echo "http" || echo "https")
                 while true; do read -p "反代源站 (域名/IPv4/localhost[:port]): " TARGET_DOMAIN; if validate_target "$TARGET_DOMAIN"; then break; fi; done
             fi
-
-            echo -e "请选择路由类型:"
-            echo "   [1] 通用反代"
-            echo "   [2] AI API 全家桶"
-            while true; do
-                read -p "请选择 (1/2): " ROUTE_PROFILE
-                if [[ "$ROUTE_PROFILE" == "1" || "$ROUTE_PROFILE" == "2" ]]; then break; fi
-            done
 
             while true; do
                 if [ "$ROUTE_PROFILE" == "2" ]; then
@@ -966,7 +999,7 @@ while true; do
     echo -e "\n=============================================="
     echo -e "      ${GREEN}API 零信任矩阵网关 ${NC}"
     echo -e "=============================================="
-    echo "  1. 部署全新网关防线2"
+    echo "  1. 部署全新网关防线"
     echo "  2. 管理内部路由矩阵"
     echo "  3. 视察全景透视状态"
     echo "  4. 彻底摧毁网关节点"
