@@ -268,15 +268,22 @@ EOF
 }
 
 function generate_ai_api_bundle_block() {
-    local target_proto=$1
-    local target_domain=$2
-    local target_path=$3
-    local save_path=$4
+    local api_path=$1
+    local target_proto=$2
+    local target_domain=$3
+    local target_path=$4
+    local save_path=$5
 
     local ssl_headers=""
     if [ "$target_proto" == "https" ]; then
         ssl_headers="proxy_ssl_server_name on;
     proxy_ssl_name $target_domain;"
+    fi
+
+    local clean_api_path
+    clean_api_path=$(echo "$api_path" | sed 's/\/$//')
+    if [ -z "$clean_api_path" ]; then
+        clean_api_path=""
     fi
 
     local clean_target_path="$target_path"
@@ -290,6 +297,11 @@ function generate_ai_api_bundle_block() {
     local meta_target="$upstream"
     if [ -n "$clean_target_path" ]; then
         meta_target="${upstream}${clean_target_path}"
+    fi
+
+    local meta_mount="/"
+    if [ -n "$clean_api_path" ]; then
+        meta_mount="$clean_api_path"
     fi
 
     local common_headers="
@@ -347,234 +359,209 @@ function generate_ai_api_bundle_block() {
     add_header Cache-Control \"no-cache, no-transform\" always;
     "
 
-    local exact_stream_proxy="$upstream"
-    local exact_v1_responses_proxy="$upstream"
-    local exact_chat_proxy="$upstream"
-    local exact_completions_proxy="$upstream"
-    local exact_messages_proxy="$upstream"
-    local exact_count_tokens_proxy="$upstream"
-    local exact_batch_messages_proxy="$upstream"
-    local exact_images_generations_proxy="$upstream"
-    local exact_images_edits_proxy="$upstream"
-    local exact_images_variations_proxy="$upstream"
-    local exact_audio_transcriptions_proxy="$upstream"
-    local exact_audio_translations_proxy="$upstream"
-    local exact_audio_speech_proxy="$upstream"
-    local exact_models_proxy="$upstream"
-    local exact_embeddings_proxy="$upstream"
-    local exact_moderations_proxy="$upstream"
-    local exact_antigravity_messages_proxy="$upstream"
+    local safe_regex_api=""
+    if [ -n "$clean_api_path" ]; then
+        safe_regex_api=$(escape_regex "$clean_api_path")
+    fi
 
-    local responses_rewrite=""
-    local codex_rewrite=""
-    local v1beta_rewrite=""
-    local antigravity_v1beta_rewrite=""
-    local v1_files_rewrite=""
-    local v1_uploads_rewrite=""
-    local v1_batches_rewrite=""
-    local v1_fine_tuning_rewrite=""
-    local v1_fallback_rewrite=""
+    # 生成 location 时：
+    # - 对外路径 = 挂载路径 + 标准 API 路径，例如 /cn/v1/responses
+    # - 后端路径 = 后端真实映射路径 + 标准 API 路径，例如 /v1/responses 或 /proxy/v1/responses
+    local P="$clean_api_path"
+    local T="$clean_target_path"
 
-    if [ -n "$clean_target_path" ]; then
-        exact_stream_proxy="${upstream}${clean_target_path}/responses"
-        exact_v1_responses_proxy="${upstream}${clean_target_path}/v1/responses"
-        exact_chat_proxy="${upstream}${clean_target_path}/v1/chat/completions"
-        exact_completions_proxy="${upstream}${clean_target_path}/v1/completions"
-        exact_messages_proxy="${upstream}${clean_target_path}/v1/messages"
-        exact_count_tokens_proxy="${upstream}${clean_target_path}/v1/messages/count_tokens"
-        exact_batch_messages_proxy="${upstream}${clean_target_path}/v1/messages/batches"
-        exact_images_generations_proxy="${upstream}${clean_target_path}/v1/images/generations"
-        exact_images_edits_proxy="${upstream}${clean_target_path}/v1/images/edits"
-        exact_images_variations_proxy="${upstream}${clean_target_path}/v1/images/variations"
-        exact_audio_transcriptions_proxy="${upstream}${clean_target_path}/v1/audio/transcriptions"
-        exact_audio_translations_proxy="${upstream}${clean_target_path}/v1/audio/translations"
-        exact_audio_speech_proxy="${upstream}${clean_target_path}/v1/audio/speech"
-        exact_models_proxy="${upstream}${clean_target_path}/v1/models"
-        exact_embeddings_proxy="${upstream}${clean_target_path}/v1/embeddings"
-        exact_moderations_proxy="${upstream}${clean_target_path}/v1/moderations"
-        exact_antigravity_messages_proxy="${upstream}${clean_target_path}/antigravity/v1/messages"
+    local rewrite_responses=""
+    local rewrite_codex=""
+    local rewrite_v1beta=""
+    local rewrite_antigravity_v1beta=""
+    local rewrite_v1_files=""
+    local rewrite_v1_uploads=""
+    local rewrite_v1_batches=""
+    local rewrite_v1_fine_tuning=""
+    local rewrite_v1_fallback=""
 
-        responses_rewrite="    rewrite ^/responses/(.*)\$ ${clean_target_path}/responses/\$1 break;"
-        codex_rewrite="    rewrite ^/backend-api/codex/responses/(.*)\$ ${clean_target_path}/backend-api/codex/responses/\$1 break;"
-        v1beta_rewrite="    rewrite ^/v1beta/(.*)\$ ${clean_target_path}/v1beta/\$1 break;"
-        antigravity_v1beta_rewrite="    rewrite ^/antigravity/v1beta/(.*)\$ ${clean_target_path}/antigravity/v1beta/\$1 break;"
-        v1_files_rewrite="    rewrite ^/v1/files(.*)\$ ${clean_target_path}/v1/files\$1 break;"
-        v1_uploads_rewrite="    rewrite ^/v1/uploads(.*)\$ ${clean_target_path}/v1/uploads\$1 break;"
-        v1_batches_rewrite="    rewrite ^/v1/batches(.*)\$ ${clean_target_path}/v1/batches\$1 break;"
-        v1_fine_tuning_rewrite="    rewrite ^/v1/fine_tuning(.*)\$ ${clean_target_path}/v1/fine_tuning\$1 break;"
-        v1_fallback_rewrite="    rewrite ^/v1/(.*)\$ ${clean_target_path}/v1/\$1 break;"
+    if [ -n "$P" ] || [ -n "$T" ]; then
+        rewrite_responses="    rewrite ^${safe_regex_api}/responses/(.*)\$ ${T}/responses/\$1 break;"
+        rewrite_codex="    rewrite ^${safe_regex_api}/backend-api/codex/responses/(.*)\$ ${T}/backend-api/codex/responses/\$1 break;"
+        rewrite_v1beta="    rewrite ^${safe_regex_api}/v1beta/(.*)\$ ${T}/v1beta/\$1 break;"
+        rewrite_antigravity_v1beta="    rewrite ^${safe_regex_api}/antigravity/v1beta/(.*)\$ ${T}/antigravity/v1beta/\$1 break;"
+        rewrite_v1_files="    rewrite ^${safe_regex_api}/v1/files(.*)\$ ${T}/v1/files\$1 break;"
+        rewrite_v1_uploads="    rewrite ^${safe_regex_api}/v1/uploads(.*)\$ ${T}/v1/uploads\$1 break;"
+        rewrite_v1_batches="    rewrite ^${safe_regex_api}/v1/batches(.*)\$ ${T}/v1/batches\$1 break;"
+        rewrite_v1_fine_tuning="    rewrite ^${safe_regex_api}/v1/fine_tuning(.*)\$ ${T}/v1/fine_tuning\$1 break;"
+        rewrite_v1_fallback="    rewrite ^${safe_regex_api}/v1/(.*)\$ ${T}/v1/\$1 break;"
     fi
 
     cat > "$save_path" <<EOF
 # META_TYPE: AI_BUNDLE
-# META_DISPLAY: AI API 全家桶 ===> $meta_target
+# META_DISPLAY: ${meta_mount} AI API 全家桶 ===> $meta_target
 
-location = /v1/responses {
-    proxy_pass $exact_v1_responses_proxy;
+location = ${P}/v1/responses {
+    proxy_pass ${upstream}${T}/v1/responses;
     $common_headers
     $stream_opts
 }
 
-location = /responses {
-    proxy_pass $exact_stream_proxy;
+location = ${P}/responses {
+    proxy_pass ${upstream}${T}/responses;
     $common_headers
     $stream_opts
 }
 
-location ^~ /responses/ {
-$responses_rewrite
+location ^~ ${P}/responses/ {
+$rewrite_responses
     proxy_pass $upstream;
     $common_headers
     $stream_opts
 }
 
-location = /backend-api/codex/responses {
-    proxy_pass ${upstream}${clean_target_path}/backend-api/codex/responses;
+location = ${P}/backend-api/codex/responses {
+    proxy_pass ${upstream}${T}/backend-api/codex/responses;
     $common_headers
     $stream_opts
 }
 
-location ^~ /backend-api/codex/responses/ {
-$codex_rewrite
+location ^~ ${P}/backend-api/codex/responses/ {
+$rewrite_codex
     proxy_pass $upstream;
     $common_headers
     $stream_opts
 }
 
-location = /v1/chat/completions {
-    proxy_pass $exact_chat_proxy;
+location = ${P}/v1/chat/completions {
+    proxy_pass ${upstream}${T}/v1/chat/completions;
     $common_headers
     $stream_opts
 }
 
-location = /v1/completions {
-    proxy_pass $exact_completions_proxy;
+location = ${P}/v1/completions {
+    proxy_pass ${upstream}${T}/v1/completions;
     $common_headers
     $stream_opts
 }
 
-location = /v1/messages {
-    proxy_pass $exact_messages_proxy;
+location = ${P}/v1/messages {
+    proxy_pass ${upstream}${T}/v1/messages;
     $common_headers
     $stream_opts
 }
 
-location = /antigravity/v1/messages {
-    proxy_pass $exact_antigravity_messages_proxy;
+location = ${P}/antigravity/v1/messages {
+    proxy_pass ${upstream}${T}/antigravity/v1/messages;
     $common_headers
     $stream_opts
 }
 
-location ^~ /v1beta/ {
-$v1beta_rewrite
+location ^~ ${P}/v1beta/ {
+$rewrite_v1beta
     proxy_pass $upstream;
     $common_headers
     $stream_opts
 }
 
-location ^~ /antigravity/v1beta/ {
-$antigravity_v1beta_rewrite
+location ^~ ${P}/antigravity/v1beta/ {
+$rewrite_antigravity_v1beta
     proxy_pass $upstream;
     $common_headers
     $stream_opts
 }
 
-location = /v1/messages/count_tokens {
-    proxy_pass $exact_count_tokens_proxy;
+location = ${P}/v1/messages/count_tokens {
+    proxy_pass ${upstream}${T}/v1/messages/count_tokens;
     $common_headers
     $normal_opts
 }
 
-location = /v1/messages/batches {
-    proxy_pass $exact_batch_messages_proxy;
+location = ${P}/v1/messages/batches {
+    proxy_pass ${upstream}${T}/v1/messages/batches;
     $common_headers
     $upload_opts
 }
 
-location = /v1/images/generations {
-    proxy_pass $exact_images_generations_proxy;
+location = ${P}/v1/images/generations {
+    proxy_pass ${upstream}${T}/v1/images/generations;
     $common_headers
     $upload_opts
 }
 
-location = /v1/images/edits {
-    proxy_pass $exact_images_edits_proxy;
+location = ${P}/v1/images/edits {
+    proxy_pass ${upstream}${T}/v1/images/edits;
     $common_headers
     $upload_opts
 }
 
-location = /v1/images/variations {
-    proxy_pass $exact_images_variations_proxy;
+location = ${P}/v1/images/variations {
+    proxy_pass ${upstream}${T}/v1/images/variations;
     $common_headers
     $upload_opts
 }
 
-location ^~ /v1/files {
-$v1_files_rewrite
+location ^~ ${P}/v1/files {
+$rewrite_v1_files
     proxy_pass $upstream;
     $common_headers
     $upload_opts
 }
 
-location ^~ /v1/uploads {
-$v1_uploads_rewrite
+location ^~ ${P}/v1/uploads {
+$rewrite_v1_uploads
     proxy_pass $upstream;
     $common_headers
     $upload_opts
 }
 
-location ^~ /v1/batches {
-$v1_batches_rewrite
+location ^~ ${P}/v1/batches {
+$rewrite_v1_batches
     proxy_pass $upstream;
     $common_headers
     $upload_opts
 }
 
-location ^~ /v1/fine_tuning {
-$v1_fine_tuning_rewrite
+location ^~ ${P}/v1/fine_tuning {
+$rewrite_v1_fine_tuning
     proxy_pass $upstream;
     $common_headers
     $upload_opts
 }
 
-location = /v1/audio/transcriptions {
-    proxy_pass $exact_audio_transcriptions_proxy;
+location = ${P}/v1/audio/transcriptions {
+    proxy_pass ${upstream}${T}/v1/audio/transcriptions;
     $common_headers
     $upload_opts
 }
 
-location = /v1/audio/translations {
-    proxy_pass $exact_audio_translations_proxy;
+location = ${P}/v1/audio/translations {
+    proxy_pass ${upstream}${T}/v1/audio/translations;
     $common_headers
     $upload_opts
 }
 
-location = /v1/audio/speech {
-    proxy_pass $exact_audio_speech_proxy;
+location = ${P}/v1/audio/speech {
+    proxy_pass ${upstream}${T}/v1/audio/speech;
     $common_headers
     $upload_opts
 }
 
-location = /v1/models {
-    proxy_pass $exact_models_proxy;
+location = ${P}/v1/models {
+    proxy_pass ${upstream}${T}/v1/models;
     $common_headers
     $normal_opts
 }
 
-location = /v1/embeddings {
-    proxy_pass $exact_embeddings_proxy;
+location = ${P}/v1/embeddings {
+    proxy_pass ${upstream}${T}/v1/embeddings;
     $common_headers
     $normal_opts
 }
 
-location = /v1/moderations {
-    proxy_pass $exact_moderations_proxy;
+location = ${P}/v1/moderations {
+    proxy_pass ${upstream}${T}/v1/moderations;
     $common_headers
     $normal_opts
 }
 
-location /v1/ {
-$v1_fallback_rewrite
+location ${P}/v1/ {
+$rewrite_v1_fallback
     proxy_pass $upstream;
     $common_headers
     $normal_opts
@@ -622,22 +609,23 @@ function deploy_domain() {
         if [[ "$ROUTE_PROFILE" == "1" || "$ROUTE_PROFILE" == "2" ]]; then break; fi
     done
 
-    API_PATH="/"
-    if [ "$ROUTE_PROFILE" == "1" ]; then
-        while true; do
-            read -p "   ↳ 请输入对外放行路径 (输入 / 为全量穿透): " API_PATH
-            if validate_path "$API_PATH"; then break; fi
-            echo -e "${RED}路径非法。${NC}"
-        done
-    fi
+    while true; do
+        if [ "$ROUTE_PROFILE" == "2" ]; then
+            read -p "5. 请输入 AI 全家桶对外挂载路径 (输入 / 表示根路径): " API_PATH
+        else
+            read -p "5. 请输入对外放行路径 (输入 / 为全量穿透): " API_PATH
+        fi
+        if validate_path "$API_PATH"; then break; fi
+        echo -e "${RED}路径非法。${NC}"
+    done
 
-    read -p "5. 请输入后端真实映射路径 (直接回车保持原样透传): " TARGET_PATH
+    read -p "6. 请输入后端真实映射路径 (直接回车保持原样透传): " TARGET_PATH
     if [ -n "$TARGET_PATH" ] && ! validate_path "$TARGET_PATH"; then
         echo -e "${YELLOW}映射路径非法，已强制降维至 [原样透传] 模式。${NC}"
         TARGET_PATH=""
     fi
 
-    echo -e "6. 是否开启 User-Agent 嗅探拦截?"
+    echo -e "7. 是否开启 User-Agent 嗅探拦截?"
     read -p "   [y/N] (默认关闭, 避免误伤合法代码调度): " ua_choice
     local UA_BLOCK=""
     if [[ "$ua_choice" =~ ^[Yy]$ ]]; then
@@ -670,11 +658,11 @@ EOF
 
     mkdir -p "$BASE_DIR/$MY_DOMAIN"
     local PATH_CONF
+    local SAFE_HASH=$(echo -n "$ROUTE_PROFILE:$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
     if [ "$ROUTE_PROFILE" == "2" ]; then
-        PATH_CONF="$BASE_DIR/$MY_DOMAIN/route_ai_bundle.conf"
-        generate_ai_api_bundle_block "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
+        PATH_CONF="$BASE_DIR/$MY_DOMAIN/route_ai_${SAFE_HASH}.conf"
+        generate_ai_api_bundle_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
     else
-        local SAFE_HASH=$(echo -n "$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
         PATH_CONF="$BASE_DIR/$MY_DOMAIN/route_${SAFE_HASH}.conf"
         generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
     fi
@@ -797,6 +785,7 @@ function manage_paths() {
             local TARGET_PROTO=""
             local TARGET_DOMAIN=""
             local API_PATH TARGET_PATH
+            local ROUTE_PROFILE
 
             if [ -n "$auto_target" ]; then
                 echo -e "探测到当前主源站记忆为: ${CYAN}${auto_proto}://${auto_target}${NC}"
@@ -818,10 +807,20 @@ function manage_paths() {
                 while true; do read -p "反代源站 (域名/IPv4/localhost[:port]): " TARGET_DOMAIN; if validate_target "$TARGET_DOMAIN"; then break; fi; done
             fi
 
-            # 管理菜单只负责“追加普通路径路由”，AI API 全家桶只在菜单 1 首次部署时选择。
-            # 否则反复选择 AI API 全家桶会固定写入 route_ai_bundle.conf，导致旧全家桶配置被覆盖。
+            echo -e "请选择路由类型:"
+            echo "   [1] 通用反代"
+            echo "   [2] AI API 全家桶"
             while true; do
-                read -p "对外放行路径 (例如 /api，输入 / 为全量穿透): " API_PATH
+                read -p "请选择 (1/2): " ROUTE_PROFILE
+                if [[ "$ROUTE_PROFILE" == "1" || "$ROUTE_PROFILE" == "2" ]]; then break; fi
+            done
+
+            while true; do
+                if [ "$ROUTE_PROFILE" == "2" ]; then
+                    read -p "AI 全家桶对外挂载路径 (例如 /cn，输入 / 表示根路径): " API_PATH
+                else
+                    read -p "对外放行路径 (例如 /api，输入 / 为全量穿透): " API_PATH
+                fi
                 if validate_path "$API_PATH"; then break; fi
                 echo -e "${RED}路径非法。${NC}"
             done
@@ -829,16 +828,25 @@ function manage_paths() {
             read -p "后端真实映射路径 (直接回车保持透传): " TARGET_PATH
             if [ -n "$TARGET_PATH" ] && ! validate_path "$TARGET_PATH" ]; then TARGET_PATH=""; fi
 
-            local SAFE_HASH=$(echo -n "$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
-            local PATH_CONF="$DOMAIN_DIR/route_${SAFE_HASH}.conf"
+            local SAFE_HASH=$(echo -n "$ROUTE_PROFILE:$API_PATH" | sha256sum | awk '{print $1}' | cut -c 1-8)
+            local PATH_CONF
+            if [ "$ROUTE_PROFILE" == "2" ]; then
+                PATH_CONF="$DOMAIN_DIR/route_ai_${SAFE_HASH}.conf"
+            else
+                PATH_CONF="$DOMAIN_DIR/route_${SAFE_HASH}.conf"
+            fi
             
             if [ -f "$PATH_CONF" ]; then
-                echo -e "${RED}该对外路径已存在：$API_PATH${NC}"
+                echo -e "${RED}该对外挂载路径已存在：$API_PATH${NC}"
                 echo -e "${YELLOW}为避免把旧路由覆盖，请先删除原路由，或换一个新路径。${NC}"
                 continue
             fi
 
-            generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
+            if [ "$ROUTE_PROFILE" == "2" ]; then
+                generate_ai_api_bundle_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
+            else
+                generate_proxy_block "$API_PATH" "$TARGET_PROTO" "$TARGET_DOMAIN" "$TARGET_PATH" "$PATH_CONF"
+            fi
             manage_blackhole "$DOMAIN_DIR"
 
             if safe_reload; then
@@ -1026,7 +1034,7 @@ while true; do
     echo -e "\n=============================================="
     echo -e "      ${GREEN}API 零信任矩阵网关 ${NC}"
     echo -e "=============================================="
-    echo "  1. 部署全新网关防线1"
+    echo "  1. 部署全新网关防线"
     echo "  2. 管理内部路由矩阵"
     echo "  3. 视察全景透视状态"
     echo "  4. 彻底摧毁网关节点"
