@@ -782,9 +782,9 @@ function manage_paths() {
 
             while true; do
                 if [ "$ROUTE_PROFILE" == "2" ]; then
-                    read -p "AI 全家桶对外挂载路径 (例如 /cn，输入 / 表示根路径): " API_PATH
+                    read -p "AI 全家桶对外挂载路径 (输入 / 表示根路径): " API_PATH
                 else
-                    read -p "对外放行路径 (例如 /api，输入 / 为全量穿透): " API_PATH
+                    read -p "对外放行路径 (输入 / 为全量穿透): " API_PATH
                 fi
                 if validate_path "$API_PATH"; then break; fi
                 echo -e "${RED}路径非法。${NC}"
