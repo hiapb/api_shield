@@ -98,21 +98,87 @@ EOF
 }
 
 function init_env() {
-    local need_apt=0
-    if ! command -v nginx >/dev/null 2>&1; then need_apt=1; fi
-    if ! command -v certbot >/dev/null 2>&1; then need_apt=1; fi
+    local need_install=0
 
-    if [ $need_apt -eq 1 ]; then
-        echo -e "${CYAN}正在自检并按需补齐底层组件...${NC}"
-        apt-get update -qq
-        apt-get install -y nginx certbot coreutils > /dev/null 2>&1
+    command -v nginx >/dev/null 2>&1 || need_install=1
+    command -v certbot >/dev/null 2>&1 || need_install=1
+
+    if [ "$need_install" -eq 1 ]; then
+        echo -e "${CYAN}正在检查软件源并安装 Nginx、Certbot...${NC}"
+        apt-get update || {
+            echo -e "${RED}APT 更新失败，请检查当前 Debian/Ubuntu 版本对应的软件源。${NC}"
+            return 1
+        }
+        DEBIAN_FRONTEND=noninteractive apt-get install -y nginx nginx-common certbot coreutils || {
+            echo -e "${RED}Nginx/Certbot 安装失败，停止初始化。${NC}"
+            return 1
+        }
     fi
-    
+
+    if [ ! -s /etc/nginx/nginx.conf ]; then
+        echo -e "${YELLOW}Nginx 主配置缺失，尝试重新安装 Nginx 配置文件...${NC}"
+        apt-get update || {
+            echo -e "${RED}APT 更新失败，无法修复 Nginx 安装。${NC}"
+            return 1
+        }
+        DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y nginx nginx-common || {
+            echo -e "${RED}Nginx 重新安装失败，停止初始化。${NC}"
+            return 1
+        }
+    fi
+
+    command -v nginx >/dev/null 2>&1 || {
+        echo -e "${RED}未找到 nginx 命令。${NC}"
+        return 1
+    }
+    command -v certbot >/dev/null 2>&1 || {
+        echo -e "${RED}未找到 certbot 命令。${NC}"
+        return 1
+    }
+
+    mkdir -p \
+        /etc/nginx/sites-available \
+        /etc/nginx/sites-enabled \
+        /etc/nginx/conf.d \
+        "$BASE_DIR" \
+        "$ACME_DIR"
+
     rm -f /etc/nginx/sites-enabled/default
-    systemctl enable nginx >/dev/null 2>&1
-    systemctl start nginx >/dev/null 2>&1
-    mkdir -p "$BASE_DIR" "$ACME_DIR"
-    ensure_ws_upgrade_map
+    systemctl enable --now nginx || {
+        echo -e "${RED}Nginx 无法启用或启动。${NC}"
+        return 1
+    }
+
+    ensure_ws_upgrade_map || return 1
+    setup_certbot_renewal || return 1
+}
+
+function setup_certbot_renewal() {
+    local hook="/etc/letsencrypt/renewal-hooks/deploy/00-api-shield-nginx-reload"
+    local nginx_bin systemctl_bin
+
+    nginx_bin="$(command -v nginx)" || return 1
+    systemctl_bin="$(command -v systemctl)" || return 1
+    mkdir -p "$(dirname "$hook")" || return 1
+
+    cat > "$hook" <<EOF
+#!/bin/sh
+set -eu
+"$nginx_bin" -t
+"$systemctl_bin" reload nginx
+EOF
+    chmod 755 "$hook" || return 1
+
+    if ! systemctl cat certbot.timer >/dev/null 2>&1; then
+        echo -e "${RED}系统未提供 certbot.timer，无法确认自动续期已配置。${NC}"
+        return 1
+    fi
+
+    systemctl enable --now certbot.timer || {
+        echo -e "${RED}启用 Certbot 自动续期定时器失败。${NC}"
+        return 1
+    }
+    echo -e "${GREEN}Certbot 自动续期定时器已启用，续期成功后会检查并重载 Nginx。${NC}"
 }
 
 function safe_reload() {
@@ -584,6 +650,11 @@ function deploy_domain() {
     echo -e "${YELLOW}启动物理隔离验证签发流程 (Webroot)...${NC}"
     local TMP_CONF="/etc/nginx/sites-available/$MY_DOMAIN"
     
+    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled "$ACME_DIR" || {
+        echo -e "${RED}创建 Nginx 站点目录失败。${NC}"
+        return 1
+    }
+
     cat > "$TMP_CONF" <<EOF
 server {
     listen 80;
@@ -594,15 +665,17 @@ server {
     location / { return 404; }
 }
 EOF
-    ln -sf "$TMP_CONF" /etc/nginx/sites-enabled/
-    safe_reload || { echo -e "${RED}验证配置加载失败。${NC}"; rm -f "$TMP_CONF" "/etc/nginx/sites-enabled/$MY_DOMAIN"; return; }
+    ln -sfn "$TMP_CONF" "/etc/nginx/sites-enabled/$MY_DOMAIN" || {
+        echo -e "${RED}启用临时 ACME 站点配置失败。${NC}"
+        rm -f "$TMP_CONF"
+        return 1
+    }
+    safe_reload || { echo -e "${RED}验证配置加载失败。${NC}"; rm -f "$TMP_CONF" "/etc/nginx/sites-enabled/$MY_DOMAIN"; return 1; }
 
-    certbot certonly --webroot -w "$ACME_DIR" -d "$MY_DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email > /dev/null 2>&1
-    
-    if [ $? -ne 0 ]; then
+    if ! certbot certonly --webroot -w "$ACME_DIR" -d "$MY_DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email; then
         echo -e "${RED}致命错误：ACME 握手失败，TLS 证书未能签发。${NC}"
         rollback_domain_deploy "$MY_DOMAIN"
-        return
+        return 1
     fi
 
     mkdir -p "$BASE_DIR/$MY_DOMAIN"
@@ -993,7 +1066,7 @@ function uninstall_system() {
     exit 0
 }
 
-init_env
+init_env || exit 1
 clear
 while true; do
     echo -e "\n=============================================="
